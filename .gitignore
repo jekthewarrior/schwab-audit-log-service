@@ -1,0 +1,11 @@
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.env
+*.egg-info/
+
+# Confidential assignment material — not for redistribution per §0.2
+instructions.pdf
