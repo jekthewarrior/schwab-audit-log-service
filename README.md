@@ -52,6 +52,47 @@ that file's docstring for the production caveat.
 uv run pytest
 ```
 
+Integration tests spin up a real Postgres container via `testcontainers` (per the
+testing-approach decision in `docs/REQUIREMENTS.md` — JSONB/numeric round-tripping
+and role-based privilege behavior are Postgres-specific, not exercised by SQLite).
+This needs direct Docker daemon access; if your shell doesn't have `docker` group
+membership active, run `sg docker -c "uv run pytest"` instead. Test modules that
+don't touch the database (`test_hashing.py`, `test_health.py`) never trigger the
+container to start, so they stay fast regardless.
+
+## Compliance reporting (Scenario C)
+
+"Regulators need to be able to audit access to client account data" is satisfied by
+the same signed export endpoint Scenario B built (`GET /audit/export`), not a
+separate compliance-specific route — see `docs/REQUIREMENTS.md`'s Scenario C section
+for the full clarification process. Internal compliance staff generate the report;
+external regulators never authenticate to this system directly.
+
+**Example:** produce a regulator-ready, independently-verifiable record of who
+viewed a given account's data in a time window:
+
+```bash
+curl "http://localhost:8000/audit/export?resourceId=acct-123&eventType=ACCOUNT_VIEWED&from=2026-01-01T00:00:00Z&to=2026-06-30T23:59:59Z"
+```
+
+The returned bundle is self-contained and signed (Ed25519) — a recipient fetches the
+current public key from `GET /audit/export/public-key` and can verify the bundle's
+signature entirely offline, without any further access to this service. `eventType`
+is caller-chosen, not enforced by the system, since 1a deliberately kept `eventType`
+free-form rather than a fixed enum — "access" events are whatever convention your
+producers actually use (e.g. `ACCOUNT_VIEWED`, `RECORD_ACCESSED`).
+
+**Explicit scope boundaries** (from the Clarified Requirement Statement):
+- No authentication/authorization on who may call this endpoint.
+- No guarantee that every read-path in a broader system actually emits an access
+  event — this service reports on what's captured, it doesn't instrument callers.
+- No full-text/payload-content search — `resourceType`/`resourceId`/`actorId` are
+  the only filters; client data referenced inside a payload of some other
+  `resourceType` won't be found this way.
+- Archived records (Scenario B retention) become unreachable through export's
+  filters once their classification fields are nulled — see `docs/REQUIREMENTS.md`,
+  Scenario B item 5e, for the known limitation and why it wasn't fixed.
+
 ## Quality gates
 
 ```bash

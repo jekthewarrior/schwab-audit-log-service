@@ -1067,3 +1067,34 @@ validation test — no new implementation, since C's technical design was alread
 folded into B3.2).
 
 **Rationale:** See `docs/TASKS.md`, task entries A5.3, A5.4, B4.1–B4.5.
+
+---
+
+## 2026-08-22 — Scenario C completion: C1 (documentation), C2 (validation test)
+
+**Intent:** Close out the last remaining tasks in `docs/TASKS.md` — Scenario C's
+usage documentation and a validation test proving the compliance scenario actually
+works end-to-end, not just that its constituent pieces (export, filters, signing)
+each work in isolation.
+
+**AI produced:** A new "Compliance reporting (Scenario C)" section in `README.md` —
+a concrete example request, an explanation of why `eventType` is caller-chosen
+rather than a fixed enum (ties back to 1a), and the explicit scope boundaries from
+the Clarified Requirement Statement, including the archived-record export
+limitation found during B3. Added a note to the "Tests" section about `sg docker`
+being required for the Postgres-backed integration tests in this environment.
+
+`tests/test_compliance.py`: three events for the same account — one access event
+inside the requested window (should appear), one non-access event inside the window
+(should be excluded by the `eventType` filter), one access event outside the window
+(should be excluded by `from`/`to`) — deliberately constructed so the test proves
+the *combination* of filters correctly isolates the intended subset, not merely
+that each filter works when applied alone. Independently verifies the resulting
+bundle's signature via `cryptography` directly, same pattern as `test_export.py`.
+
+**Verification:** full suite (42 tests) passes; `ruff`/`mypy` clean.
+
+**Decision:** This completes every task in `docs/TASKS.md` across all three
+scenarios — implementation, documentation, and automated validation.
+
+**Rationale:** See `docs/TASKS.md`, task entries C1, C2.

@@ -430,7 +430,7 @@ No new endpoint or schema — the entire technical design is captured in B3.2's
 `eventType`/`from`/`to` filter extension. What's left is validation and
 documentation specific to the compliance use case.
 
-- [ ] **C1 — Documentation: compliance reporting usage guidance.** README/
+- [x] **C1 — Documentation: compliance reporting usage guidance.** README/
   architecture-doc section walking through the compliance use case end-to-end:
   e.g. "filter by `resourceId=<account>` + `eventType=ACCOUNT_VIEWED` + `from`/`to`
   to produce a regulator-ready, independently-verifiable access report," including
@@ -438,12 +438,23 @@ documentation specific to the compliance use case.
   who can call this, no guarantee every read-path in a broader system emits an
   access event, no payload-content search).
   *Implements: the Clarified Requirement Statement, Scenario C.*
-- [ ] **C2 — Integration test: compliance report scenario.** Write a mix of
+  → New "Compliance reporting (Scenario C)" section in `README.md`, including the
+  archived-record export limitation found during B3 (Scenario B item 5e).
+- [x] **C2 — Integration test: compliance report scenario.** Write a mix of
   `ACCOUNT_VIEWED` and other event types for the same `resourceId`; export filtered
   by `resourceId` + `eventType=ACCOUNT_VIEWED` + a time range that excludes some of
   the written events; confirm only the matching subset appears in the bundle and
   the signature verifies.
   *Implements: C1–C6, the Clarified Requirement Statement.* Depends on: B3.2.
+  → `tests/test_compliance.py`. Three events: one access event in-window (included),
+  one non-access event in-window (excluded by `eventType`), one access event
+  out-of-window (excluded by `from`/`to`) — confirms the filter combination actually
+  isolates the intended subset, not just that filtering works in isolation.
+  Independently verifies the signature via `cryptography` directly, same pattern as
+  `test_export.py`.
+
+**Scenario C's task list is now fully complete — all implementation, documentation,
+and validation work across all three scenarios is done.**
 
 **Explicitly out of scope (from the Clarified Requirement Statement, not omissions):**
 authentication/authorization for who may run reports (C6); instrumentation
