@@ -728,4 +728,114 @@ against, only a clarified requirement statement to construct).
 
 ## Scenario C — Compliance Reporting
 
-_Not yet started._
+Different shape from A and B — no numbered spec to extract raw requirements from,
+just one intentionally under-specified product statement. The deliverable here is the
+clarification process itself, not a resolved ambiguity list against existing text.
+
+### Original (Ambiguous) Requirement
+
+> "Regulators need to be able to audit access to client account data."
+
+### Ambiguities Identified
+
+##### C1 — Who are "regulators," and how do they interact with the system?
+- **Status:** ✅ Decided
+- **Decision:** Internal compliance/audit staff generate reports *for* regulators
+  (e.g. during an examination) — regulators never authenticate to or query this
+  system directly.
+- **Rationale:** The far more common real-world pattern (compliance teams produce and
+  hand over records rather than granting external parties logins to internal
+  systems), and it keeps the scenario focused on what it's actually testing —
+  requirement clarification and reporting design — rather than pulling in a
+  regulator-facing identity/access-management build. This was the one genuine fork
+  worth confirming before committing, given how much scope it determines; user
+  confirmed this framing.
+
+##### C2 — What does "access" mean?
+- **Status:** ✅ Decided
+- **Decision:** Read/view events specifically, not any interaction.
+- **Rationale:** The sharper, more distinctly regulatory concern (unauthorized
+  viewing, insider-trading-adjacent monitoring) — the aspect a write-focused audit
+  log would otherwise under-capture. Write events remain fully covered by Scenario A
+  regardless of this framing.
+
+##### C3 — What counts as "client account data"?
+- **Status:** ✅ Decided, with a documented limitation
+- **Decision:** Whatever `resourceType`(s) the caller specifies when running a
+  report — not a hardcoded taxonomy baked into this system. Consistent with 1a's
+  decision to leave `resourceType` free-form rather than a fixed enum.
+- **Documented limitation (user-identified):** client account data may also appear
+  embedded within the `payload` of records whose `resourceType` isn't itself an
+  account-type (e.g. a support-ticket or case-management record that references an
+  account number in passing). Such records would not be surfaced by
+  `resourceType`-based filtering alone. **Partial, already-existing mitigation:**
+  because filtering isn't restricted to `resourceType` — `actorId` and time-range
+  filters are independent (per Scenario A's Query API, req 4) and bulk export filters
+  by `resourceId` *or* `actorId` (Scenario B) — compliance staff can search across
+  *any* `resourceType` by actor or time window without needing to know the exact
+  `resourceType` label used for a given interaction. **Not mitigated:** true
+  full-text/payload-content search (e.g. "find all records mentioning account number
+  X regardless of resourceType") would require a different capability — indexed
+  payload search — and is explicitly out of scope for this prototype. Doesn't change
+  the design; documented so the limitation is explicit rather than silently assumed
+  away.
+
+##### C4 — What's the actual deliverable — a query, or a report?
+- **Status:** ✅ Decided
+- **Decision:** Scenario B's signed bulk export, filtered to access-type events for
+  specified account(s)/actor(s)/time range — not a new reporting subsystem built from
+  scratch.
+- **Rationale:** A "compliance report for regulators" maps directly onto a
+  self-contained, independently-verifiable bundle — exactly what Scenario B already
+  provides. Building Scenario C as an application of A/B's existing capabilities,
+  plus a thin purpose-built layer on top, is a meaningfully smaller and more coherent
+  build than a parallel reporting pipeline, and reuses infrastructure that's already
+  been designed for exactly this trust profile (tamper-evident, third-party
+  verifiable).
+
+##### C5 — Regulatory-framework specificity
+- **Status:** ✅ Decided
+- **Decision:** Not targeting compliance with any named regulation (SEC 17a-4,
+  FINRA, GDPR, SOX, etc.) — a general capability that would plausibly *support* such
+  obligations, not certified compliance with one.
+- **Rationale:** Researching and implementing a specific securities-law recordkeeping
+  requirement is a legal-research undertaking disproportionate to this exercise; the
+  document doesn't name one, and inventing that scope unprompted would be assuming
+  facts not in evidence.
+
+##### C6 — Auth/authz for who may run reports
+- **Status:** ✅ Decided
+- **Decision:** Out of scope, documented as an explicit assumption rather than
+  silently dropped.
+- **Rationale:** Follows from C1 — flagged back in Scenario A's 2a decision as a
+  question to revisit if Scenario C's regulator framing pulled auth/authz back into
+  scope; given C1's resolution (internal staff, not external regulator logins), it
+  doesn't.
+
+### Clarified Requirement Statement
+
+> Internal compliance/audit staff must be able to generate a complete,
+> independently-verifiable record of read/view access to client account data —
+> scoped to a specified account (`resourceType`/`resourceId`), actor, and/or time
+> range — suitable for production to external regulators during an examination. This
+> reuses the existing tamper-evident audit log (Scenario A) and signed bulk-export
+> mechanism (Scenario B) rather than introducing a parallel reporting pipeline.
+>
+> **Explicit scope boundaries:**
+> - Authentication/authorization for who may run reports is out of scope (C6).
+> - Instrumentation of every application read-path to emit access events is out of
+>   scope — this system reports on access events that *are* captured; it doesn't own
+>   guaranteeing every read path logs one.
+> - "Client account data" is scoped by caller-specified `resourceType`(s) — not a
+>   hardcoded taxonomy (C3).
+> - Full-text/payload-content search is out of scope (C3) — client account data
+>   referenced inside payloads of non-account-`resourceType` records won't be
+>   surfaced by this design; partially mitigated by independent `actorId`/time-range
+>   filtering, not fully solved.
+
+### Next steps
+
+Requirement clarification complete for all three scenarios. Technical design and the
+full actionable task breakdown (all three scenarios, dependency-ordered) now live in
+[`docs/TASKS.md`](TASKS.md) — including Scenario C's design, which turned out to be a
+small extension of Scenario B's export filters rather than new infrastructure.

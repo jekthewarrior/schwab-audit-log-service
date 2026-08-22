@@ -597,3 +597,87 @@ format/signing scheme), 5d, and 5e locked in alongside it, no further pushback.
 **Rationale:** See `docs/REQUIREMENTS.md`, Scenario B, items "5a" (includes the full
 rechaining analysis), "5b," "5c," "5d," "5e." **This completes Scenario B's full
 ambiguity list** — all four groups, every item, Decided. Next: Scenario C.
+
+---
+
+## 2026-08-22 — Scenario C requirement clarification (C1–C6) and clarified statement
+
+**Intent:** Clarify Scenario C's single, intentionally under-specified product
+statement ("Regulators need to be able to audit access to client account data")
+before any code — different process from A/B, since there's no numbered spec to
+extract ambiguities against; the clarification itself is the deliverable.
+
+**AI produced (round 1):** Identified six ambiguities in the one-sentence statement:
+who "regulators" are and how they interact with the system (C1 — flagged as the one
+genuine fork worth confirming, given how much scope it determines: external
+regulator-facing access vs. internal compliance staff producing reports); what
+"access" means (C2 — leaned read/view specifically); what "client account data"
+means given Scenario A's free-form `resourceType` (C3); what the actual deliverable
+is (C4 — proposed framing this as an application of Scenario B's signed bulk export
+rather than new infrastructure); regulatory-framework specificity (C5 — proposed not
+targeting any named regulation); and auth/authz scope (C6 — proposed keeping it out
+of scope, closing a question explicitly deferred back in Scenario A's 2a decision).
+Proposed a draft clarified requirement statement building on all six.
+
+**User feedback:** Confirmed the overall frame (internal staff, reuse of A/B
+infrastructure) as right for the use case and scope. Added a genuine gap the AI's
+draft hadn't surfaced: "client account data" could be embedded inside a record's
+`payload` even when that record's `resourceType` isn't itself an account-type (e.g. a
+support-ticket record referencing an account number) — meaning `resourceType`-based
+filtering alone wouldn't find such records. Noted this doesn't change the design, but
+should be documented as part of the process, and pointed out that Scenario B's
+export already filtering by `resourceId` *or* `actorId` independently gives partial,
+already-existing mitigation.
+
+**AI response:** Incorporated the user's point into C3 as an explicit documented
+limitation (not silently assumed away): full-text/payload-content search is out of
+scope, partially but not fully mitigated by existing independent `actorId`/time-range
+filtering. Finalized the clarified requirement statement with explicit scope
+boundaries (auth/authz out of scope, read-path instrumentation out of scope,
+`resourceType`-based account-data scoping, payload-content search limitation) and
+wrote the full C1–C6 writeup plus the clarified statement into
+`docs/REQUIREMENTS.md`.
+
+**Decision:** **FINAL** for the clarification phase — all six ambiguities resolved,
+clarified requirement statement locked in.
+
+**Rationale:** See `docs/REQUIREMENTS.md`, Scenario C, "Ambiguities Identified" and
+"Clarified Requirement Statement." Next: translate into a concrete technical design
+(endpoint(s)/parameters) and an explicit implemented-vs-scoped-out boundary.
+
+---
+
+## 2026-08-22 — Scenario C technical design + docs/TASKS.md created for all three scenarios
+
+**Intent:** User directed creating `docs/TASKS.md` — a companion document to
+`docs/REQUIREMENTS.md`, holding the concrete technical design and actionable task
+breakdown (Core Requirement #2: task decomposition with dependencies and sequencing)
+derived from all decisions across Scenarios A, B, and C. Also the point where
+Scenario C's remaining "translate into technical design" step needed to happen.
+
+**AI produced:** Scenario C's technical design: identified that the clarified
+requirement's three scoping dimensions (account/actor/time-range) map almost
+entirely onto Scenario B's export, with one real gap — B's export only filtered by
+`resourceId`/`actorId`, no `eventType` or time-range filter, which C's clarified
+statement needs. Concluded the design is a small, targeted extension (add optional
+`eventType`/`from`/`to` params to the existing export endpoint) rather than a new
+`/audit/compliance-report` route, avoiding duplicated signing/bundling logic.
+
+Then created `docs/TASKS.md` in full: a per-scenario task breakdown (mirroring
+`docs/REQUIREMENTS.md`'s structure) covering data layer, write path, query path,
+verify path, and tests for Scenario A; redaction, retention, and bulk export
+(including the Scenario C filter extension folded directly into the export task
+rather than listed as a separate later addition) for Scenario B; and
+documentation/validation tasks for Scenario C. Each task cites the specific
+`REQUIREMENTS.md` decision ID(s) it implements and its dependencies on other tasks.
+Tasks were written against the *final*, amended state of each design (e.g. the
+schema task includes Scenario B's per-field commitment and archival columns from the
+start, not as a later migration) rather than replaying the chronological discovery
+order. Closed with a suggested build order across all three scenarios.
+
+**Decision:** Delivered as directed; no open questions raised back to the user for
+this step, consistent with "proceed."
+
+**Rationale:** See `docs/TASKS.md` in full. `docs/REQUIREMENTS.md`'s Scenario C
+"Next steps" updated to point here instead of restating the now-completed design
+step.
