@@ -230,18 +230,38 @@ folded into A4.1.
 
 ### B1. Redaction
 
-- [ ] **B1.1 — `POST /audit/events/{sequence_number}/redact` endpoint.** Body names
-  a top-level `payload` field path. Validates the field exists and isn't already
-  redacted; overwrites its raw value with the structured marker
+- [x] **B1.1 — `POST /audit/events/{sequence_number}/redact` endpoint.** Body names
+  a top-level `payload` field path. Validates the record exists, isn't archived
+  (nothing left to redact — 409), the field exists (404), and isn't already
+  redacted (409); overwrites its raw value with the structured marker
   (`{"__redacted__": true, "redactedAt", "redactionEventSeq"}`); retains its
   `(hash, salt)` in `payload_field_commitments` unchanged; runs through the
   `maintenance_role` connection (A1.3), never `app_role`.
   *Implements: 3a, 3b, 3c, 3d, 3e.* Depends on: A1.1, A1.3, A2.1.
-- [ ] **B1.2 — Append `FIELD_REDACTED` system event.** Same append path as A2.3
-  (via `app_role` — this is a normal chain-appended event, not a mutation),
-  documenting which record/field/actor/timestamp. Runs inside the same transaction
-  as B1.1's redaction write.
+  → `src/audit_log_service/services/redact.py`, `src/audit_log_service/api/redact.py`,
+  `src/audit_log_service/schemas/redact.py`. Extracted `is_redaction_marker` into a
+  new `core/redaction.py` — shared between this file and `services/verify.py`,
+  rather than duplicated, so the marker-detection logic can't drift out of sync
+  between the writer and the reader of that structure.
+- [x] **B1.2 — Append `FIELD_REDACTED` system event.** Runs via `maintenance_role`,
+  not `app_role` as originally described — see A1.3's note: `maintenance_role`
+  needed `INSERT` added specifically so this event and B1.1's `UPDATE` can commit
+  atomically in one transaction, which isn't possible across two different
+  roles/connections. Documents which record/field/actor/timestamp.
   *Implements: 3b (audit trail for the redaction action).* Depends on: A2.3, B1.1.
+
+  **Verified live against the real stack:** wrote a record with a sensitive field,
+  redacted it via the actual endpoint, confirmed the record's `content_hash` is
+  **byte-for-byte identical** before and after redaction (the core proof that
+  redaction never touches the hash chain), confirmed `/audit/verify` still reports
+  intact, confirmed the `FIELD_REDACTED` event is discoverable via
+  `GET /audit/events?eventType=FIELD_REDACTED` (3f's discoverability answer). Tested
+  all four error paths (record not found, field not found, already redacted, and —
+  via direct `psql` as `app_role` — confirmed `app_role` genuinely cannot perform
+  the `UPDATE` at all, the role split is real). Tampered the *retained* hash for the
+  redacted field directly via `psql` and confirmed `CONTENT_MISMATCH` still fires —
+  empirically confirms the retained hash is itself transitively tamper-protected via
+  `content_hash`, not a special trusted value exempt from the chain's guarantee.
 
 ### B2. Retention
 

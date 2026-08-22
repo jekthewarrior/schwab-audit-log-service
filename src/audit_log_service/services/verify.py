@@ -8,15 +8,9 @@ from audit_log_service.core.hashing import (
     payload_commitment_from_hashes,
     record_hash,
 )
+from audit_log_service.core.redaction import is_redaction_marker
 from audit_log_service.models import AuditEvent
 from audit_log_service.schemas.verify import VerifyResult, ViolationType
-
-
-def _is_redaction_marker(value: object) -> bool:
-    """Matches the structure from REQUIREMENTS.md Scenario B 3e:
-    {"__redacted__": true, "redactedAt": ..., "redactionEventSeq": ...}.
-    """
-    return isinstance(value, dict) and value.get("__redacted__") is True
 
 
 def _recompute_content_hash(record: AuditEvent) -> str:
@@ -39,7 +33,7 @@ def _recompute_content_hash(record: AuditEvent) -> str:
 
     field_hashes: dict[str, str] = {}
     for key, value in payload.items():
-        if _is_redaction_marker(value):
+        if is_redaction_marker(value):
             field_hashes[key] = commitments[key]["hash"]
         else:
             field_hashes[key] = field_hash(commitments[key]["salt"], key, value)

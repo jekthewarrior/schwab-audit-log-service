@@ -859,3 +859,37 @@ fixture now, or continue through Scenario B first and consolidate automated
 test-writing into one later pass.
 
 **Rationale:** See `docs/TASKS.md`, task entries A4.1, A4.2, A5.3, A5.4.
+
+---
+
+## 2026-08-22 — Implementation: B1 (redaction)
+
+**Intent:** Build the redaction endpoint — the first Scenario B feature, per the
+user's decision to continue there rather than pause for test infrastructure.
+
+**AI produced:** `services/redact.py` (validates record exists/not archived/field
+exists/not already redacted; appends a `FIELD_REDACTED` event and overwrites the
+field's raw value with the marker, in one transaction), `api/redact.py`,
+`schemas/redact.py`. Added `MaintenanceSessionDep` to `core/db.py`, mirroring
+`SessionDep`. Extracted `is_redaction_marker` (previously duplicated inline in
+`verify.py` during A4, now also needed by `redact.py`) into a new
+`core/redaction.py` — one definition shared by the code that writes the marker and
+the code that must recognize it, rather than two copies that could drift.
+
+**Verification — the most important check here is a negative one:** wrote a record
+with a sensitive field, redacted it via the real endpoint, and confirmed the
+record's `content_hash` is byte-for-byte identical before and after — the direct,
+empirical proof that redaction never touches the hash chain, not just an inference
+from the design. Confirmed `/audit/verify` stays intact, confirmed the
+`FIELD_REDACTED` event is discoverable via the query endpoint. Tested all four error
+paths (404/404/409/409). Confirmed via direct `psql` as `app_role` that `app_role`
+genuinely cannot perform the `UPDATE` — the least-privilege split from A1.3 actually
+holds under the real feature that needs it, not just in isolation. Tampered the
+*retained* hash for a redacted field directly and confirmed `CONTENT_MISMATCH` still
+fires — empirically confirms the retained hash is transitively protected via
+`content_hash`, not a trusted exemption from the chain's guarantee.
+
+**Decision:** Proceeding to B2 (retention) next, per the build order's note that B1
+and B2 can proceed independently.
+
+**Rationale:** See `docs/TASKS.md`, task entries B1.1, B1.2.
