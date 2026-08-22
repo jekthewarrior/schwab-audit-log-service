@@ -8,6 +8,7 @@ from audit_log_service.core.hashing import (
     payload_commitment_from_hashes,
     record_hash,
 )
+from audit_log_service.core.invariants import require_not_none
 from audit_log_service.core.redaction import is_redaction_marker
 from audit_log_service.models import AuditEvent
 from audit_log_service.schemas.verify import VerifyResult, ViolationType
@@ -21,31 +22,40 @@ def _recompute_content_hash(record: AuditEvent) -> str:
     field is freshly rehashed from its current value, so tampering with a
     non-redacted field is caught exactly like tampering with any other field.
     """
-    assert record.event_type is not None
-    assert record.actor_id is not None
-    assert record.resource_type is not None
-    assert record.resource_id is not None
-    assert record.timestamp is not None
-    assert record.recorded_at is not None
+    invariant = "non-archived record must have this field populated"
+    event_type = require_not_none(record.event_type, invariant)
+    actor_id = require_not_none(record.actor_id, invariant)
+    resource_type = require_not_none(record.resource_type, invariant)
+    resource_id = require_not_none(record.resource_id, invariant)
+    timestamp = require_not_none(record.timestamp, invariant)
+    recorded_at = require_not_none(record.recorded_at, invariant)
 
     payload = record.payload or {}
     commitments = record.payload_field_commitments or {}
 
+    # A field present in payload but absent from commitments means the field set
+    # itself was tampered with (added or renamed directly in the datastore, not
+    # just a value edited in place) — fall back to an empty salt rather than
+    # KeyError. This can never coincidentally match the real stored commitment (a
+    # 128-bit random salt), so it reliably produces CONTENT_MISMATCH via the normal
+    # comparison below instead of crashing verify on tampered input.
     field_hashes: dict[str, str] = {}
     for key, value in payload.items():
-        if is_redaction_marker(value):
-            field_hashes[key] = commitments[key]["hash"]
+        commitment = commitments.get(key)
+        if commitment is not None and is_redaction_marker(value):
+            field_hashes[key] = commitment["hash"]
         else:
-            field_hashes[key] = field_hash(commitments[key]["salt"], key, value)
+            salt = commitment["salt"] if commitment is not None else ""
+            field_hashes[key] = field_hash(salt, key, value)
 
     return compute_content_hash(
         sequence_number=record.sequence_number,
-        recorded_at=record.recorded_at,
-        event_type=record.event_type,
-        actor_id=record.actor_id,
-        resource_type=record.resource_type,
-        resource_id=record.resource_id,
-        timestamp=record.timestamp,
+        recorded_at=recorded_at,
+        event_type=event_type,
+        actor_id=actor_id,
+        resource_type=resource_type,
+        resource_id=resource_id,
+        timestamp=timestamp,
         payload_commitment_value=payload_commitment_from_hashes(field_hashes),
     )
 
@@ -96,7 +106,9 @@ async def verify_chain(session: AsyncSession) -> VerifyResult:
                     detail="Record 1's prev_hash does not match the genesis constant",
                 )
         else:
-            assert previous is not None
+            previous = require_not_none(
+                previous, "sequence_number != 1 implies a previous record was already seen"
+            )
             expected_prev_hash = record_hash(previous.content_hash, previous.prev_hash)
             if record.prev_hash != expected_prev_hash:
                 return VerifyResult(

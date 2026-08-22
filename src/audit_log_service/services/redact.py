@@ -3,6 +3,7 @@ from datetime import UTC, datetime
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from audit_log_service.core.hashing import canonical_timestamp
+from audit_log_service.core.invariants import require_not_none
 from audit_log_service.core.redaction import is_redaction_marker
 from audit_log_service.models import AuditEvent
 from audit_log_service.services.append import append_event
@@ -53,15 +54,16 @@ async def redact_field(
     if is_redaction_marker(payload[field]):
         raise FieldAlreadyRedactedError(field)
 
-    assert target.resource_type is not None
-    assert target.resource_id is not None
+    invariant = "non-archived record must have this field populated"
+    resource_type = require_not_none(target.resource_type, invariant)
+    resource_id = require_not_none(target.resource_id, invariant)
 
     redaction_event = await append_event(
         session,
         event_type="FIELD_REDACTED",
         actor_id=actor_id,
-        resource_type=target.resource_type,
-        resource_id=target.resource_id,
+        resource_type=resource_type,
+        resource_id=resource_id,
         payload={"redactedSequenceNumber": sequence_number, "field": field},
         timestamp=datetime.now(UTC),
     )

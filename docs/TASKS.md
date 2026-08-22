@@ -205,20 +205,30 @@ thing twice.
   automated, multi-record integration test that tampering with any single stored
   record invalidates every subsequent record's link — needs A4's verify logic to
   assert against, so deferred there.
-- [x] **A5.3 (manually verified live, not yet automated) — Integration: req 9's full
-  acceptance flow.** Write events → query → verify (intact) → direct DB mutation
-  (bypassing the API) → verify again (catches it, reports the correct violation type
-  per 8a). Run for real against the running stack while building A4.2 — see that
-  task's notes for the full set of cases exercised (all three violation types, both
-  genesis-violation paths, both false-positive-avoidance cases). **Still open:**
-  codifying this as an automated `pytest` test needs a real-Postgres fixture
-  (`testcontainers`, per the testing-approach decision — already a dev dependency
-  from the initial scaffold, not yet wired into a fixture). Flagged as a decision
-  point for the user rather than assumed: build the fixture now, or continue through
-  Scenario B first and consolidate automated test-writing into one later pass.
-- [ ] **A5.4 — Integration: concurrent writers.** Confirms the advisory lock (A2.3)
+- [x] **A5.3 — Integration: req 9's full acceptance flow, automated.** Write events
+  → query → verify (intact) → direct DB mutation (bypassing the API, via the admin
+  connection) → verify again (catches it, reports the correct violation type per
+  8a). Covers all three violation types and both genesis-violation paths.
+  → `tests/test_acceptance.py`, `tests/conftest.py` (the `testcontainers`-based
+  Postgres fixture, built as part of this task — session-scoped container +
+  migrations, function-scoped truncation between tests, separate `app`/
+  `maintenance`/`admin` session fixtures matching the three DB roles).
+  **Found and fixed a real bug, not just a test gap:** the direct-content-tampering
+  test (wholesale payload replacement — a plausible, simple attack) crashed
+  `verify_chain` with an unhandled `KeyError` instead of reporting
+  `CONTENT_MISMATCH`, because `_recompute_content_hash` assumed every payload key
+  has a matching `payload_field_commitments` entry — true for legitimate writes,
+  false for a field an attacker added or renamed directly in the datastore. Fixed
+  in `services/verify.py` (falls back to an empty salt for a missing commitment,
+  which can never coincidentally match the real one, so it reliably produces
+  `CONTENT_MISMATCH` instead of crashing) and locked in as a named regression test.
+  This is exactly the value of testing against real Postgres with real tampering
+  rather than only reasoning about the design on paper.
+- [x] **A5.4 — Integration: concurrent writers.** Confirms the advisory lock (A2.3)
   serializes appends correctly — no duplicate or gapped `sequence_number`s under
-  concurrent load. Same open dependency as A5.3 (needs the Postgres test fixture).
+  concurrent load, and the resulting chain still verifies intact.
+  → `tests/test_concurrency.py` — 20 concurrent `append_event` calls via
+  `asyncio.gather`, each on its own session from the same engine.
 
 ---
 
@@ -373,27 +383,44 @@ folded into A4.1.
 
 ### B4. Tests
 
-- [ ] **B4.1 — Unit: redaction preserves chain validity.** Redact a field, confirm
+- [x] **B4.1 — Unit: redaction preserves chain validity.** Redact a field, confirm
   `content_hash` unchanged, confirm verify (A4.1) still reports intact, confirm the
   *other* fields in the same payload are still independently tamper-detectable
   (regression test for the whole-payload-hash failure mode identified while
   resolving 3a).
   *Implements: 3a, 3f.*
-- [ ] **B4.2 — Unit: archival preserves chain validity, no false positive.**
+  → `tests/test_redaction.py`. Also caught a bug in the test suite itself, not the
+  app: an early draft asserted `redact_field`'s return value *was* the
+  `FIELD_REDACTED` event — it actually returns the redacted target record (which is
+  what the API hands back), matching `api/redact.py`'s intent. Fixed by splitting
+  into two tests: one confirming the return value, one confirming the event is
+  discoverable via `list_events` (3f's actual discoverability answer).
+- [x] **B4.2 — Unit: archival preserves chain validity, no false positive.**
   Archive a record, confirm verify reports intact (2b's new branch exercised),
   confirm gap detection is unaffected (2c).
   *Implements: 1d, 2a, 2b, 2c.*
-- [ ] **B4.3 — Unit: redacted field salting.** Confirm two records with the same
+  → `tests/test_retention.py`.
+- [x] **B4.3 — Unit: redacted field salting.** Confirm two records with the same
   redacted value produce *different* stored hashes (distinct salts) — salting
   defeats brute-force even for low-entropy values like a 9-digit account number —
   regression test for the brute-force risk identified in 3a.
-- [ ] **B4.4 — Integration: export bundle signature.** Tamper with an exported
+  → Covered at the pure-function level in `tests/test_hashing.py`
+  (`test_field_hash_differs_for_different_salts`, written alongside A2.1) rather
+  than duplicated as a DB-backed integration test — the property doesn't depend on
+  the database.
+- [x] **B4.4 — Integration: export bundle signature.** Tamper with an exported
   bundle's JSON (any field, including a record's own `content_hash`), confirm
   signature verification fails — the scenario the rechaining-vs-signature analysis
   (5a) was specifically evaluating.
-- [ ] **B4.5 — Integration: DB-level immutability.** Confirm `app_role`'s connection
+  → `tests/test_export.py`. Verifies independently using `cryptography`'s
+  primitives directly (not calling the app's own `sign`/`verify` code), mirroring
+  the live third-party verification done manually during B3.
+- [x] **B4.5 — Integration: DB-level immutability.** Confirm `app_role`'s connection
   gets a permission error on any attempted `UPDATE`/`DELETE` against `audit_events`
   — proves 2a's defense-in-depth layer is real, not just documented intent.
+  → `tests/test_privileges.py`. Also confirms the inverse (`maintenance_role` *can*
+  update `payload`) — without a positive case, the negative tests could pass
+  vacuously if the role had no access to the database at all.
 
 ---
 

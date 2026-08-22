@@ -990,3 +990,80 @@ automated test suite (A5/B4) before Scenario C's remaining documentation/test ta
 
 **Rationale:** See `docs/TASKS.md`, task entries B3.1, B3.2; `docs/REQUIREMENTS.md`,
 Scenario B item 5e and Scenario C's Clarified Requirement Statement.
+
+---
+
+## 2026-08-22 — Consolidated automated test suite (A5.3/A5.4, B4.1–B4.5) — a real crash bug found and fixed by testing against real Postgres
+
+**Intent:** Build the deferred `testcontainers`-based Postgres fixture and codify
+everything verified manually across A4–B3 into real `pytest` coverage, per the
+user's earlier decision to defer this until Scenario A/B's features were all built.
+
+**AI produced:** `tests/conftest.py` — session-scoped container (only starts for
+test modules that actually request DB fixtures, so `test_hashing.py`/
+`test_health.py` stay fast), migrations run via a subprocess with
+`ADMIN_DATABASE_URL` overridden (avoids fighting the app's module-level
+engine/settings singletons, which get bound to local-dev config the moment any
+earlier test imports `audit_log_service.main`), function-scoped truncation between
+tests, and three session fixtures (`app_session`/`maintenance_session`/
+`admin_session`) matching the three DB roles. Five new test modules:
+`test_acceptance.py` (req 9's full flow, every violation type), `test_concurrency.py`
+(20 concurrent writers), `test_redaction.py`, `test_retention.py`, `test_export.py`
+(independent signature verification via `cryptography` primitives, not the app's own
+code), `test_privileges.py`.
+
+**Environment note, not a design decision:** this environment's shell doesn't carry
+`docker` group membership by default even though it was granted earlier in the
+project (see the A1 log entries) — confirmed `testcontainers` needs direct daemon
+access (unlike `docker compose`, which was being invoked through a wrapper). Running
+pytest itself needs the same `sg docker -c "..."` wrapping used throughout for
+`docker compose`.
+
+**Infrastructure bug found and fixed, not a design gap:** the first full run failed
+every DB-backed test with `"another operation is in progress"` — a session-scoped
+async engine (`db_engines`) combined with pytest-asyncio's default per-test event
+loop meant later tests tried to reuse asyncpg connections created under a different
+loop. Fixed via `asyncio_default_fixture_loop_scope = "session"` /
+`asyncio_default_test_loop_scope = "session"` in `pyproject.toml`.
+
+**A real application bug found by testing against actual Postgres, not a test
+artifact:** `test_direct_content_tampering_is_detected` (wholesale payload
+replacement via direct SQL — a plausible, simple form of the exact tampering req 9
+asks the system to catch) crashed `verify_chain` with an unhandled `KeyError`
+instead of reporting `CONTENT_MISMATCH`. Root cause: `_recompute_content_hash`
+assumed every key in a record's current `payload` has a matching entry in
+`payload_field_commitments` — true for every legitimate write, but false the moment
+an attacker adds or renames a payload key directly in the datastore, which is
+exactly what req 9's validation scenario is testing for. Fixed in
+`services/verify.py`: a payload key with no matching commitment falls back to an
+empty salt, which can never coincidentally match the real 128-bit random salt, so
+it reliably produces `CONTENT_MISMATCH` through the existing comparison logic
+instead of raising. Locked in as a named regression test rather than just a passing
+assertion, so the reason it exists survives future refactors. This is the clearest
+example in the project of automated testing against a real database finding
+something that manual `curl`-based verification (which only exercised value edits,
+never key addition) had not.
+
+**A test bug found and fixed, distinct from the app bug above:**
+`test_field_redacted_event_is_discoverable` asserted `redact_field`'s return value
+*was* the `FIELD_REDACTED` event; it actually returns the redacted target record
+(matching `api/redact.py`'s actual contract). Split into two correct tests rather
+than just patching the assertion, since both are genuinely worth covering
+separately.
+
+**Quality-gate follow-through, not scope creep:** `bandit` (already a configured
+gate) flagged nine `assert`-based type-narrowing statements added during A4/B1
+(B101 — asserts are stripped under Python's `-O`, so logic a caller depends on
+shouldn't rely on one holding). Added `core/invariants.py::require_not_none` and
+replaced all nine, since bandit was already part of this project's stated quality
+gates and silently ignoring its findings would contradict that.
+
+**Verification:** full suite (41 tests) passes against real Postgres in ~12 seconds;
+`ruff`, `mypy`, `bandit`, and `pip-audit` all clean.
+
+**Decision:** This closes out all previously-deferred A5/B4 test tasks. Remaining
+work per `docs/TASKS.md`'s build order: C1/C2 (Scenario C's documentation and
+validation test — no new implementation, since C's technical design was already
+folded into B3.2).
+
+**Rationale:** See `docs/TASKS.md`, task entries A5.3, A5.4, B4.1–B4.5.

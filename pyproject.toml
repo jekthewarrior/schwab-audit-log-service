@@ -48,6 +48,12 @@ explicit_package_bases = true
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
+# Session-scoped, matching db_engines (tests/conftest.py) — without this, each test
+# function gets its own event loop by default, and asyncpg connections created
+# under one loop can't be reused from another, producing spurious
+# "another operation is in progress" errors against a session-scoped engine.
+asyncio_default_fixture_loop_scope = "session"
+asyncio_default_test_loop_scope = "session"
 testpaths = ["tests"]
 
 [tool.bandit]
