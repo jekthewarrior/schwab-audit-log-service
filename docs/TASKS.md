@@ -308,11 +308,15 @@ folded into A4.1.
 
 ### B3. Bulk export
 
-- [ ] **B3.1 — Ed25519 signing key setup.** Generate keypair; private key loaded
+- [x] **B3.1 — Ed25519 signing key setup.** Generate keypair; private key loaded
   from an environment variable/secrets manager at startup, never committed; public
   key documented/exposed for recipients. `signingKeyId` supports future rotation.
   *Implements: 5c (operational note).*
-- [ ] **B3.2 — `GET /audit/export` endpoint.** Requires at least one of
+  → `src/audit_log_service/core/signing.py`, `export_signing_key_seed_hex` +
+  `export_signing_key_id` in `core/config.py`, `cryptography` added as a dependency.
+  Public key exposed via `GET /audit/export/public-key`, not just documentation —
+  lets a recipient fetch it directly rather than requiring separate distribution.
+- [x] **B3.2 — `GET /audit/export` endpoint.** Requires at least one of
   `resourceId`/`actorId`; accepts optional `eventType` and `from`/`to` (composable
   with the required filter) — this same parameter set satisfies both Scenario B's
   original bulk-export ask and Scenario C's compliance-reporting extension, so no
@@ -325,6 +329,47 @@ folded into A4.1.
   *Implements: 5a, 5b, 5d, 5e (Scenario B); the filter extension also implements
   Scenario C's technical design.* Depends on: A2.1, A3.2 (filter logic reuse),
   B3.1.
+  → `src/audit_log_service/services/export.py`, `src/audit_log_service/api/export.py`,
+  `src/audit_log_service/schemas/export.py`. Extracted `build_filtered_query` out of
+  `services/query.py` so export and the paginated query endpoint share one filter
+  implementation rather than two copies that could drift (export defaults
+  `include_archived=True`, the opposite of the query endpoint's default, since a
+  compliance export is meant to show the complete history, not just the active
+  subset). Added `CanonicalDatetime` (a Pydantic `PlainSerializer` type alias in
+  `schemas/event.py`, applied to `AuditEventOut` and `ExportBundle`) — a
+  correctness requirement identified while building this, not a stylistic choice:
+  the signature covers a canonical serialization of the bundle, so whatever the
+  JSON *response* actually contains must be byte-identical to what was signed, and
+  relying on Pydantic's default datetime formatting to happen to match our own
+  `canonical_timestamp` function would have been fragile. The service builds the
+  full `ExportBundle` model first, then derives the signable bytes from
+  `model_dump(mode="json", by_alias=True, exclude={"signature"})` rather than
+  hand-building a parallel dict — guarantees the signed bytes and the response body
+  can never drift apart.
+
+  **Verified live against the real stack, including fully independent third-party
+  signature verification (not calling any of our own service code)** — wrote three
+  events, exported filtered by `resourceId`, fetched the public key from
+  `/audit/export/public-key`, then in a separate Python process reconstructed the
+  canonical JSON from the bundle's own content and verified the Ed25519 signature
+  using only `cryptography`'s primitives directly: **valid**. Tampered a record's
+  payload *and* its own `contentHash` together in the downloaded bundle file (the
+  exact attack self-consistency checks alone can't catch) and re-verified:
+  correctly **invalid**. Redacted a field and re-exported — redaction represented
+  correctly, signature still verifies. Confirmed the required-filter validation
+  (400 with neither `resourceId` nor `actorId`).
+
+  **Real gap found via live testing, not a bug in this code — a cross-feature
+  interaction with Scenario B's retention design:** archiving a record nulls every
+  column export can filter on, so an archived record becomes unreachable via
+  `actorId`/`resourceType`/`resourceId`/`eventType`/time-range filters — 5e's "yes,
+  archived records can be exported" is true in principle but not reachable in
+  practice through this endpoint once a record is archived. Raised to the user as a
+  three-way decision (document as a known limitation / add sequence-number-range
+  export filters / reopen what archival nulls); **user chose to document it**
+  rather than change either already-built feature. See `docs/REQUIREMENTS.md`,
+  Scenario B item 5e, for the full writeup, and Scenario C's clarified requirement,
+  which inherits this limitation.
 
 ### B4. Tests
 

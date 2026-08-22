@@ -2,11 +2,22 @@ import json
 from datetime import datetime
 from typing import Annotated
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, PlainSerializer, field_validator
 from pydantic.alias_generators import to_camel
+
+from audit_log_service.core.hashing import canonical_timestamp
 
 MAX_PAYLOAD_BYTES = 32 * 1024
 MAX_PAYLOAD_DEPTH = 10
+
+# Forces every datetime field using this alias to serialize to JSON via our own
+# canonical_timestamp — not Pydantic's default datetime encoding. This matters
+# beyond cosmetics: the export bundle (Scenario B 5c) signs a canonical
+# serialization of its content, and a recipient reconstructing that serialization
+# from the bundle's JSON response must get byte-identical output. Relying on
+# Pydantic's default formatting happening to match canonical_timestamp would be
+# fragile — this makes the two the same function by construction.
+CanonicalDatetime = Annotated[datetime, PlainSerializer(canonical_timestamp, return_type=str)]
 
 
 def _payload_depth(value: object, current: int = 1) -> int:
@@ -62,9 +73,9 @@ class AuditEventOut(BaseModel):
     resource_type: str | None
     resource_id: str | None
     payload: dict[str, object] | None
-    timestamp: datetime | None
-    recorded_at: datetime | None
+    timestamp: CanonicalDatetime | None
+    recorded_at: CanonicalDatetime | None
     content_hash: str
     prev_hash: str
     archived: bool
-    archived_at: datetime | None
+    archived_at: CanonicalDatetime | None

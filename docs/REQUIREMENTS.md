@@ -716,6 +716,24 @@ Redaction is worked first as the foundational mechanism.
   `archived`/`archivedAt`, and its verification trusts the stored `contentHash`
   directly (skipping recompute from now-null fields), exactly as live verify does.
   Ultimately backstopped by the bundle-level signature either way.
+- **⚠️ Known limitation, found during B3 implementation (live testing), not a design
+  gap silently missed:** in practice this is close to unreachable through the
+  export endpoint's filters. Archival nulls every column export can filter on
+  (`resourceType`, `resourceId`, `actorId`, `eventType`, `timestamp`) — once a
+  record is archived, no filter value can match it anymore, since it's comparing
+  against `NULL`. This is the same consequence already accepted for the query
+  endpoint's `includeArchived` flag (1e), but is more consequential here: a
+  regulator/compliance officer's most natural export request — "show me the
+  complete history for this account, including anything since archived" — can't be
+  satisfied by this endpoint once the relevant records are archived, since there's
+  no longer an attribute value to filter by. Reaching an archived record via export
+  requires already knowing its `sequence_number` from before it was archived (not
+  currently an export parameter). Explicitly chosen not to fix now: extending
+  export with `sequence_number`-range filters (which survive archival) is a
+  reasonable additive fix, and reopening what archival nulls (Scenario B 1d/2a/2b)
+  to preserve classification fields is a larger, more invasive alternative — both
+  deferred rather than silently patched over. See also Scenario C's clarified
+  requirement, which inherits this limitation directly.
 
 ### Next steps
 
@@ -832,6 +850,12 @@ clarification process itself, not a resolved ambiguity list against existing tex
 >   referenced inside payloads of non-account-`resourceType` records won't be
 >   surfaced by this design; partially mitigated by independent `actorId`/time-range
 >   filtering, not fully solved.
+> - Exported reports cannot reach *archived* records by account/actor once their
+>   classification fields are nulled by retention (found during B3 implementation —
+>   see Scenario B, item 5e). A regulator asking for "the complete history,
+>   including anything since archived" cannot be fully satisfied by this endpoint;
+>   reaching an archived record requires already knowing its `sequenceNumber` from
+>   before archival.
 
 ### Next steps
 

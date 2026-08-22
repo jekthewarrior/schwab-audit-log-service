@@ -932,3 +932,61 @@ exclusion, idempotency (second sweep call archives nothing), and — via direct
 **Decision:** Proceeding to B3 (bulk export) next.
 
 **Rationale:** See `docs/TASKS.md`, task entries B2.1, B2.2.
+
+---
+
+## 2026-08-22 — Implementation: B3 (bulk export) — independent third-party signature verification, plus a real cross-feature gap found and resolved with the user
+
+**Intent:** Build Ed25519 bundle signing and `GET /audit/export` — the last
+Scenario A/B feature before a consolidated automated-testing pass.
+
+**AI produced:** `core/signing.py` (Ed25519, dev-fixed seed, documented production
+caveat — same pattern as DB passwords), `services/export.py`, `api/export.py`,
+`schemas/export.py`. Added `cryptography` as a dependency. Extracted
+`build_filtered_query` out of `services/query.py` so the paginated query endpoint
+and export share one filter implementation with different defaults
+(`include_archived` false vs. true) rather than two copies.
+
+**Correctness requirement identified and solved, not in the original task
+description:** the export bundle's signature covers a canonical serialization of
+its content, so the JSON response actually served must be byte-identical to what
+was signed — relying on Pydantic's default datetime formatting to coincidentally
+match the project's own `canonical_timestamp` function would have been fragile.
+Added `CanonicalDatetime`, a `PlainSerializer` type alias forcing every datetime
+field in the relevant schemas through `canonical_timestamp` by construction, and
+had the export service derive the signable bytes from the finished
+`ExportBundle` model's own `model_dump()` (excluding only the signature field)
+rather than hand-building a parallel dict that could drift from the real response.
+
+**Verification — the most rigorous check in the project so far, since it
+simulates a genuine external recipient rather than testing our own code path:**
+exported a bundle, fetched the public key via the new endpoint, then in a
+*separate* Python process — using only `cryptography`'s primitives directly, no
+project code — reconstructed the canonical JSON from the bundle's own content and
+verified the signature: valid. Tampered a record's payload *and* its own
+`contentHash` together in the downloaded file (the exact attack self-consistency
+checks alone can't catch, which was the whole reason 5a chose signing over
+self-consistency) and re-verified: correctly invalid. Confirmed redacted fields
+export and verify correctly, and the required-filter (400) validation.
+
+**Real cross-feature gap found via this live testing, surfaced to the user rather
+than silently patched:** archiving a record (Scenario B's retention, already built
+and locked) nulls every column export can filter on, so an archived record becomes
+practically unreachable through `actorId`/`resourceType`/`resourceId`/`eventType`/
+time-range filters — 5e's "yes, archived records can be exported" holds in
+principle but not in practice through this endpoint. This is more consequential for
+Scenario C specifically: a regulator's natural ask ("complete history including
+anything archived") can't be satisfied here. Presented three options — document as
+a known limitation, add sequence-number-range export filters, or reopen what
+archival nulls (Scenario B 1d/2a/2b) — rather than picking one unilaterally, since
+two of the three touch already-locked design decisions. **User chose to document
+it.** Written up in full in `docs/REQUIREMENTS.md` under Scenario B's 5e and cross-
+referenced from Scenario C's clarified requirement, rather than left implicit.
+
+**Decision:** B3 complete. Scenario A and B feature work is now done; per the
+earlier user decision, next is building the deferred `testcontainers`-based
+automated test suite (A5/B4) before Scenario C's remaining documentation/test tasks
+(C1/C2).
+
+**Rationale:** See `docs/TASKS.md`, task entries B3.1, B3.2; `docs/REQUIREMENTS.md`,
+Scenario B item 5e and Scenario C's Clarified Requirement Statement.

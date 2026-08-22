@@ -32,5 +32,14 @@ class Settings(BaseSettings):
     # REQUIREMENTS.md Scenario B 1b: single global setting, not per-policy-rule.
     retention_window_days: int = 365
 
+    # Ed25519 signing key for export bundles (Scenario B 5c). Dev-only fixed seed —
+    # production would load this from a secrets manager/KMS, never a hardcoded
+    # default (documented, not silently simplified — see the operational note in
+    # REQUIREMENTS.md 5c).
+    export_signing_key_seed_hex: str = (
+        "4307d2f61c47efa0ec7d92be9eb55bc1069260444459c48466616829726d5e6f"
+    )
+    export_signing_key_id: str = "dev-key-1"
+
 
 settings = Settings()

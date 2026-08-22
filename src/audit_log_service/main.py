@@ -1,6 +1,7 @@
 from fastapi import FastAPI
 
 from audit_log_service.api.events import router as events_router
+from audit_log_service.api.export import router as export_router
 from audit_log_service.api.redact import router as redact_router
 from audit_log_service.api.retention import router as retention_router
 from audit_log_service.api.verify import router as verify_router
@@ -10,6 +11,7 @@ app.include_router(events_router)
 app.include_router(verify_router)
 app.include_router(redact_router)
 app.include_router(retention_router)
+app.include_router(export_router)
 
 
 @app.get("/health")
