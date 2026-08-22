@@ -770,3 +770,45 @@ existing yet), with what's still open stated explicitly rather than checked
 prematurely.
 
 **Rationale:** See `docs/TASKS.md`, task entries A2.1–A2.5, A5.1, A5.2.
+
+---
+
+## 2026-08-22 — Implementation: A3 (query path)
+
+**Intent:** Build cursor pagination and `GET /audit/events` — the third unit in
+`docs/TASKS.md`'s build order.
+
+**AI produced:** `services/query.py` (`list_events`, filtering + keyset pagination)
+and the `GET /audit/events` route in `api/events.py`. Pagination implemented as
+"fetch `limit + 1` rows" to detect a next page without a separate `COUNT` query.
+
+**Refinement, not a deviation:** ruff's B008 (no function calls in argument
+defaults) flagged 2 of 9 identical `Query(...)` parameter defaults inconsistently
+(same pattern, only `from_`/`to` flagged) — rather than debug the inconsistency,
+switched all nine to FastAPI's `Annotated[type, Query(...)]` style, the same fix
+already applied to the session dependency in A2.
+
+**Noted, not fixed — a real but expected interaction:** while writing
+`list_events`'s docstring, identified that `includeArchived=true` combined with any
+other filter will never surface an archived record, since archival (Scenario B)
+nulls every detail column and NULL never satisfies a SQL equality/range comparison.
+Documented explicitly in the code rather than left for someone to discover and
+mistake for a bug — it's the correct, if non-obvious, consequence of 1e's already-
+accepted limitation.
+
+**Verification:** live-tested against the real running stack rather than relying on
+unit tests alone — seeded 7 records spanning multiple actors/resourceTypes/
+eventTypes/timestamps (including 2 left over from A2's smoke test, confirming state
+persists correctly across sessions), then confirmed: AND semantics between filters,
+`resourceType`-alone filtering (4c), time-range filtering against the caller
+timestamp specifically (4a) — including a case where two earlier-written records had
+later timestamps than newly-seeded ones, correctly included by a `from` filter —
+3-page cursor pagination across all 7 records with no gaps or duplicates, and
+default-exclude/`includeArchived=true`-include behavior against a manually-archived
+record. Automated pytest coverage needs a real Postgres fixture (per the
+testing-approach decision, not SQLite) — deferred to A5 as originally sequenced, not
+skipped.
+
+**Decision:** Proceeding to A4 (verify path) next.
+
+**Rationale:** See `docs/TASKS.md`, task entries A3.1, A3.2.

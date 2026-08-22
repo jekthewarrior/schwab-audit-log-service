@@ -111,14 +111,33 @@ thing twice.
 
 ### A3. Query path
 
-- [ ] **A3.1 — Cursor pagination utility.** Keyset pagination anchored to
-  `sequence_number`, default sort descending.
+- [x] **A3.1 — Cursor pagination utility.** Keyset pagination anchored to
+  `sequence_number`, default sort descending. Implemented as "fetch `limit + 1`
+  rows, if the extra one exists set `nextCursor` to the last returned row's
+  `sequence_number`" — avoids a separate `COUNT` query to determine if there's a
+  next page.
   *Implements: 5a/5d, 5b.*
-- [ ] **A3.2 — `GET /audit/events` endpoint.** Filters: `actorId`, `resourceType`
+  → `list_events()` in `src/audit_log_service/services/query.py`.
+- [x] **A3.2 — `GET /audit/events` endpoint.** Filters: `actorId`, `resourceType`
   (independently valid without `resourceId`), `resourceId`, `eventType`, `from`/`to`
   (against caller-supplied `timestamp`) — AND semantics across filters. Default
   `limit=50`/max `limit=500`. Excludes archived records unless `includeArchived=true`.
+  Noted a non-obvious interaction in `list_events()`'s docstring: since archival
+  (Scenario B) nulls every detail column, `includeArchived=true` combined with any
+  other filter (actorId, resourceType, etc.) will never surface an archived record —
+  a NULL never satisfies an equality/range comparison in SQL. This is consistent
+  with 1e's documented limitation (archived content isn't meaningfully
+  searchable), not a bug, but worth being explicit about for a future reader.
   *Implements: 4a–4c, 5c (Scenario A); 1e (Scenario B).* Depends on: A3.1, A1.2.
+  → `src/audit_log_service/api/events.py`, `src/audit_log_service/schemas/query.py`.
+  Verified live against the real stack: seeded 7 records across multiple
+  actors/resourceTypes/eventTypes/timestamps; confirmed AND semantics
+  (`actorId`+`eventType` narrows correctly), `resourceType`-alone filtering, `from`
+  time-range filtering against caller timestamp, 3-page cursor pagination with no
+  gaps or duplicates across all 7 records, and default-exclude/opt-in-include of a
+  manually-archived record. Automated pytest coverage (needs a real Postgres
+  fixture, not SQLite, per the testing-approach decision) deferred to A5, consistent
+  with the original build order — not skipped, just sequenced after A4 as planned.
 
 ### A4. Verify path
 
