@@ -6,8 +6,6 @@ from sqlalchemy.orm import Mapped, mapped_column
 
 from audit_log_service.core.db import Base
 
-GENESIS_HASH = "0" * 64
-
 
 class AuditEvent(Base):
     """The append-only, hash-chained audit log table.

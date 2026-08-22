@@ -62,28 +62,52 @@ thing twice.
 
 ### A2. Write path
 
-- [ ] **A2.1 — Canonical serialization + hashing module.** Per-field salted
+- [x] **A2.1 — Canonical serialization + hashing module.** Per-field salted
   commitment for `payload` (`fieldHash(key) = SHA256(salt || canonical(key) ||
   canonical(value))`, fresh random salt per field; `payloadCommitment =
   SHA256(canonical(sorted (fieldName, fieldHash) pairs))`); combined `content_hash`
   over the seven non-payload fields plus `payloadCommitment`.
+  Implementation note: `field_hash` hashes `[salt, key, value]` as one canonical
+  JSON array rather than concatenating three separate canonicalized strings — avoids
+  ambiguity from variable-length-string concatenation, functionally equivalent to
+  the documented design. `record_hash` (A2.2) safely uses plain string
+  concatenation instead, since both its inputs are fixed-length 64-char hex strings
+  with no such ambiguity.
   *Implements: 6a–6c (as amended by Scenario B 3a).*
-- [ ] **A2.2 — `recordHash` derivation utility.** Transient, not stored:
+  → `src/audit_log_service/core/hashing.py`; unit tests in `tests/test_hashing.py`
+  (canonicalization determinism, salting produces different hashes for identical
+  low-entropy values, content_hash sensitivity to every covered field, recordHash
+  cascade sensitivity to prev_hash).
+- [x] **A2.2 — `recordHash` derivation utility.** Transient, not stored:
   `SHA256(content_hash || prev_hash)`. Used by both the append service (A2.3) and
-  verify (A4.1).
+  verify (A4.1, not yet built).
   *Implements: 6d.* Depends on: A2.1.
-- [ ] **A2.3 — Append service.** Advisory-lock-scoped critical section
+  → `record_hash()` in `src/audit_log_service/core/hashing.py`.
+- [x] **A2.3 — Append service.** Advisory-lock-scoped critical section
   (`pg_advisory_xact_lock` on a fixed constant key): read tail →
   `sequence_number = tail_seq + 1` → `prev_hash = recordHash(tail)` (or genesis
   `"0"*64` if no tail exists) → compute `content_hash` → insert → commit.
   *Implements: 7c, 7d, 7b.* Depends on: A2.1, A2.2, A1.2.
-- [ ] **A2.4 — Pydantic request/response schemas.** `eventType` pattern
+  → `src/audit_log_service/services/append.py`. Verified live: wrote two events via
+  the running API, independently recomputed record 1's `recordHash` and confirmed it
+  matches record 2's stored `prev_hash` exactly.
+- [x] **A2.4 — Pydantic request/response schemas.** `eventType` pattern
   `^[A-Z][A-Z0-9_]*$`; all six fields required; `payload` constrained to a JSON
-  object with size (~32KB) and nesting-depth (~10) caps.
+  object with size (~32KB) and nesting-depth (~10) caps. camelCase API surface
+  (`eventType`, `actorId`, ...) over snake_case internals, via Pydantic's
+  `alias_generator=to_camel` — not specified in the original task, added since the
+  document's own examples use camelCase field names.
   *Implements: 1a–1d.*
-- [ ] **A2.5 — `POST /audit/events` endpoint.** Wires A2.4 validation → A2.3 append
+  → `src/audit_log_service/schemas/event.py`.
+- [x] **A2.5 — `POST /audit/events` endpoint.** Wires A2.4 validation → A2.3 append
   service. No update/delete routes exist anywhere in the API.
   *Implements: req 1, req 2.* Depends on: A2.3, A2.4.
+  → `src/audit_log_service/api/events.py`. Added `SessionDep` (an `Annotated`
+  session-dependency alias in `core/db.py`) as a small refactor over the original
+  design so every future endpoint reuses one definition instead of repeating
+  `Depends(get_session)`. Verified live: valid write returns 201 with correct chain
+  fields; malformed `eventType` (lowercase) is rejected with 422 and consumes no
+  `sequence_number` (confirmed via direct DB query) — validates 1d.
 
 ### A3. Query path
 
@@ -114,12 +138,21 @@ thing twice.
 
 ### A5. Tests
 
-- [ ] **A5.1 — Unit: canonical serialization determinism** (sorted keys, fixed
-  separators reproduce identical output across runs) and the numeric int/float JSONB
-  round-trip case flagged in 6c (e.g. `100` vs `100.0`).
-- [ ] **A5.2 — Unit: `recordHash` cascade.** Confirms tampering with any single
-  record's `content_hash` or `prev_hash` invalidates every subsequent record's link
-  — the core security property identified while resolving 6d.
+- [x] **A5.1 (partial) — Unit: canonical serialization determinism**, salting
+  produces different hashes for identical low-entropy values, `content_hash`
+  sensitivity to every covered field — done early, alongside A2.1, in
+  `tests/test_hashing.py`. **Still open:** the numeric int/float JSONB round-trip
+  case flagged in 6c (e.g. `100` vs `100.0`) — needs an actual DB round-trip, not a
+  pure unit test of the hashing function in isolation; deferred to a DB-backed
+  integration test once A3/A4 exist to query the round-tripped value back out.
+- [ ] **A5.2 (partial) — Unit: `recordHash` cascade.** The hash-function-level
+  property (`record_hash` output changes if `prev_hash` changes) is covered in
+  `tests/test_hashing.py`, alongside A2.1, and manually verified live against two
+  real records written through the running API (independently recomputed record 1's
+  `recordHash`, matched record 2's stored `prev_hash` exactly). **Still open:** an
+  automated, multi-record integration test that tampering with any single stored
+  record invalidates every subsequent record's link — needs A4's verify logic to
+  assert against, so deferred there.
 - [ ] **A5.3 — Integration: req 9's full acceptance flow.** Write events → query →
   verify (intact) → direct DB mutation (bypassing the API) → verify again (catches
   it, reports the correct violation type per 8a).

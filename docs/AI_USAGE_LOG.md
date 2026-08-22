@@ -727,3 +727,46 @@ pacing established during the design phase.
 **Rationale:** See `docs/TASKS.md`, task entries A1.1–A1.3 (marked complete, each
 with a pointer to the file(s) it produced and notes on refinements made during
 implementation).
+
+---
+
+## 2026-08-22 — Implementation: A2 (write path)
+
+**Intent:** Build the hashing module, append service, request/response schemas, and
+`POST /audit/events` endpoint — the second unit in `docs/TASKS.md`'s build order.
+
+**AI produced:** `core/hashing.py` (canonicalization, per-field salted commitments,
+content_hash, record_hash), `services/append.py` (advisory-lock-scoped append),
+`schemas/event.py` (Pydantic validation matching 1a–1d, camelCase API surface via
+`alias_generator=to_camel` — an addition over the original task description, since
+the source document's own examples use camelCase field names), and
+`api/events.py` + wiring into `main.py`.
+
+**Two implementation-level refinements, not deviations from `REQUIREMENTS.md`
+decisions:** (1) `field_hash` hashes `[salt, key, value]` as one canonical JSON
+array rather than concatenating three separately-canonicalized strings, avoiding
+ambiguity from variable-length-string concatenation — functionally equivalent to
+the documented `SHA256(salt || canonical(key) || canonical(value))` formula, just a
+safer literal encoding of it. (2) Added `SessionDep`, a shared `Annotated` FastAPI
+dependency alias in `core/db.py`, after `ruff` flagged the direct
+`Depends(get_session)` pattern (B008) — avoids repeating the pattern (and
+suppressing the lint warning) across what will be several more endpoints.
+
+**Verification, not just implementation:** wrote `tests/test_hashing.py` early
+(covers most of A5.1/A5.2 ahead of schedule — canonicalization determinism, salting
+produces different hashes for identical low-entropy values, content_hash sensitivity
+to every covered field including `sequence_number`, `record_hash`'s sensitivity to
+`prev_hash`). Then live-tested against the actual running stack: wrote two events
+through the real API, independently recomputed record 1's `recordHash` in a Python
+shell and confirmed it matches record 2's stored `prev_hash` byte-for-byte — not just
+"looks plausible" but arithmetically verified. Confirmed a malformed `eventType`
+(lowercase) is rejected with 422 and consumes no `sequence_number` (checked via
+direct DB query), validating 1d's "rejected writes never touch the chain" guarantee
+end-to-end, not just in the abstract. Full quality gates (ruff, mypy, pytest) pass.
+
+**Decision:** `docs/TASKS.md` updated: A2.1–A2.5 checked off with file pointers and
+refinement notes; A5.1/A5.2 marked partially done (the parts coverable without A3/A4
+existing yet), with what's still open stated explicitly rather than checked
+prematurely.
+
+**Rationale:** See `docs/TASKS.md`, task entries A2.1–A2.5, A5.1, A5.2.
