@@ -812,3 +812,50 @@ skipped.
 **Decision:** Proceeding to A4 (verify path) next.
 
 **Rationale:** See `docs/TASKS.md`, task entries A3.1, A3.2.
+
+---
+
+## 2026-08-22 — Implementation: A4 (verify path) — full req 9 acceptance test run live
+
+**Intent:** Build the chain walk, violation taxonomy, and `GET /audit/verify` — the
+fourth unit in `docs/TASKS.md`'s build order, and the point where req 9's core
+acceptance criterion becomes testable end-to-end.
+
+**AI produced:** `services/verify.py` (fail-fast, DB-streamed walk implementing the
+genesis/content/link checks and the three-category taxonomy from 8a) and
+`schemas/verify.py`. Required a small refactor to `hashing.py`, done first and
+explained to the user before building verify on top of it: separated
+`payload_commitment_from_hashes` (plain `{field: hash}` input) from the write-time
+`payload_commitment` convenience wrapper, and changed `compute_content_hash` to take
+an already-computed commitment value rather than the raw commitments dict — lets
+verify's mixed fresh/retained-hash reconstruction and the append service's all-fresh
+computation share one function. Also narrowed the model's
+`payload_field_commitments` type from `dict[str, object]` to `dict[str, dict[str,
+str]]`, since its shape is fixed and self-controlled.
+
+**Verification — this is the most consequential testing done in the project so far,
+since it's the literal req 9 acceptance test, not just component-level checks:** ran
+the full write → verify → tamper → verify cycle for real against the running stack,
+covering every case the design work anticipated: empty-chain intact; clean-write
+intact; direct `payload` tampering → `CONTENT_MISMATCH`; direct `prev_hash`
+tampering → `LINK_MISMATCH` (reverted using the hashing module itself to compute the
+correct value, not guessed); outright deletion of an interior record →
+`LINK_MISMATCH` naming exactly which `sequence_number` is missing; both
+genesis-violation paths from 8a's design discussion (record 1's `prev_hash` tampered
+vs. record 1 deleted entirely, producing different detail messages); a manually
+simulated archived record producing no false positive (2b); a manually simulated
+redacted field producing no false positive (3f); **and**, critically, confirmed that
+tampering a *different, non-redacted* field in that same partially-redacted record
+still produces `CONTENT_MISMATCH`. That last case is the literal property that
+justified rejecting a whole-payload hash in favor of per-field commitments during
+Scenario B's 3a discussion — reasoned about on paper then, empirically confirmed in
+the running system now.
+
+**Open item flagged for the user, not silently deferred:** automating this as a
+`pytest` integration test needs a real-Postgres fixture (`testcontainers`, already a
+dev dependency, not yet wired up). Manual live verification is thorough but isn't
+part of the `pytest` suite reviewers would run. Framed as a decision point: build the
+fixture now, or continue through Scenario B first and consolidate automated
+test-writing into one later pass.
+
+**Rationale:** See `docs/TASKS.md`, task entries A4.1, A4.2, A5.3, A5.4.

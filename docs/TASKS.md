@@ -141,7 +141,7 @@ thing twice.
 
 ### A4. Verify path
 
-- [ ] **A4.1 — Verify walk logic.** Per record, in `sequence_number` order: genesis
+- [x] **A4.1 — Verify walk logic.** Per record, in `sequence_number` order: genesis
   check (`sequence_number=1`'s `prev_hash == "0"*64`); content check — **skip and
   trust the stored `content_hash` if `archived=true`** (Scenario B 2b), otherwise
   recompute using retained per-field hashes for redacted fields (Scenario B 3a/3f)
@@ -151,9 +151,42 @@ thing twice.
   Fail-fast: stop and report at the first inconsistency found.
   *Implements: 8a, 6d, 8b (Scenario A); 2a/2b/2c (Scenario B).* Depends on: A2.2,
   A1.2.
-- [ ] **A4.2 — `GET /audit/verify` endpoint.** Single synchronous request, DB-streamed
-  cursor (no full-table buffering in memory).
+  → `src/audit_log_service/services/verify.py`, `src/audit_log_service/schemas/verify.py`.
+  Required a small refactor of `hashing.py`, done alongside this task: split
+  `payload_commitment` into a lower-level `payload_commitment_from_hashes(dict[str,
+  str])` and `compute_content_hash` now takes an already-computed
+  `payload_commitment_value` rather than the raw write-time commitments dict — lets
+  the append service (all-fresh hashes) and verify (mixed fresh/retained-for-
+  redacted hashes) share the same content-hash-building function while differing
+  only in how they arrive at the commitment value. Also narrowed
+  `payload_field_commitments`'s model type from `dict[str, object]` to
+  `dict[str, dict[str, str]]` (A1.1) — its shape is fixed and self-controlled, unlike
+  `payload` itself.
+- [x] **A4.2 — `GET /audit/verify` endpoint.** Single synchronous request, DB-streamed
+  cursor (no full-table buffering in memory), via `session.stream_scalars`.
   *Implements: 7e.* Depends on: A4.1.
+  → `src/audit_log_service/api/verify.py`.
+
+  **Verified live — this is req 9's full acceptance test, run for real against the
+  running stack, not simulated:** empty chain → `intact: true`. Wrote 4 clean
+  events → `intact: true`. Tampered a record's `payload` directly via `psql` →
+  `CONTENT_MISMATCH` at the correct `sequence_number`; reverted, confirmed back to
+  intact. Tampered a record's `prev_hash` directly → `LINK_MISMATCH` naming the
+  correct predecessor; reverted (using the hashing module itself to compute the
+  correct value) and confirmed intact again. Deleted an interior record outright →
+  `LINK_MISMATCH` with `"Missing record(s) with sequence_number 3"` — the literal
+  req 9 scenario (write → verify → tamper via direct datastore mutation → verify
+  catches it). Tampered record 1's `prev_hash` → `GENESIS_MISMATCH`; deleted record
+  1 outright → `GENESIS_MISMATCH` with `"chain begins at sequence_number=2"` — the
+  two distinct genesis-violation paths identified while resolving 8a. Manually
+  simulated an archived record (nulled detail columns, per Scenario B 2a/2b) →
+  confirmed no false positive. Manually simulated a redacted field (marker +
+  retained commitment, per Scenario B 3a/3e) → confirmed no false positive, **and**
+  confirmed tampering with a *different, non-redacted* field in the same
+  partially-redacted record still produces `CONTENT_MISMATCH` — this is the exact
+  property that motivated rejecting a whole-payload hash during Scenario B's 3a
+  discussion, now empirically confirmed in the running system rather than just
+  reasoned about on paper.
 
 ### A5. Tests
 
@@ -172,12 +205,20 @@ thing twice.
   automated, multi-record integration test that tampering with any single stored
   record invalidates every subsequent record's link — needs A4's verify logic to
   assert against, so deferred there.
-- [ ] **A5.3 — Integration: req 9's full acceptance flow.** Write events → query →
-  verify (intact) → direct DB mutation (bypassing the API) → verify again (catches
-  it, reports the correct violation type per 8a).
+- [x] **A5.3 (manually verified live, not yet automated) — Integration: req 9's full
+  acceptance flow.** Write events → query → verify (intact) → direct DB mutation
+  (bypassing the API) → verify again (catches it, reports the correct violation type
+  per 8a). Run for real against the running stack while building A4.2 — see that
+  task's notes for the full set of cases exercised (all three violation types, both
+  genesis-violation paths, both false-positive-avoidance cases). **Still open:**
+  codifying this as an automated `pytest` test needs a real-Postgres fixture
+  (`testcontainers`, per the testing-approach decision — already a dev dependency
+  from the initial scaffold, not yet wired into a fixture). Flagged as a decision
+  point for the user rather than assumed: build the fixture now, or continue through
+  Scenario B first and consolidate automated test-writing into one later pass.
 - [ ] **A5.4 — Integration: concurrent writers.** Confirms the advisory lock (A2.3)
   serializes appends correctly — no duplicate or gapped `sequence_number`s under
-  concurrent load.
+  concurrent load. Same open dependency as A5.3 (needs the Postgres test fixture).
 
 ---
 

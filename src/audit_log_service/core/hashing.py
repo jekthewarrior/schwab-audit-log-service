@@ -53,14 +53,22 @@ def compute_payload_commitments(payload: dict[str, object]) -> dict[str, dict[st
             for key, value in payload.items()}
 
 
-def payload_commitment(field_commitments: dict[str, dict[str, str]]) -> str:
-    """Commits to the *set* of per-field hashes — substitutes for the raw payload
+def payload_commitment_from_hashes(hashes_by_field: dict[str, str]) -> str:
+    """Commits to a *set* of per-field hashes — substitutes for the raw payload
     value as content_hash's eighth input (REQUIREMENTS.md 6c amendment / Scenario B
-    3a). Works identically whether a given field's hash came from a fresh
-    computation or was retained as-is for a redacted field.
+    3a). Takes a plain {field: hash} mapping so both the append service (all fresh
+    hashes) and verify (a mix of freshly recomputed and retained-for-redacted-fields
+    hashes) can share this same function.
+    """
+    return sha256_hex(canonical_json(hashes_by_field))
+
+
+def payload_commitment(field_commitments: dict[str, dict[str, str]]) -> str:
+    """Write-time convenience: extracts the hash from each {hash, salt} entry and
+    delegates to payload_commitment_from_hashes.
     """
     hashes_by_field = {key: entry["hash"] for key, entry in field_commitments.items()}
-    return sha256_hex(canonical_json(hashes_by_field))
+    return payload_commitment_from_hashes(hashes_by_field)
 
 
 def compute_content_hash(
@@ -72,10 +80,13 @@ def compute_content_hash(
     resource_type: str,
     resource_id: str,
     timestamp: datetime,
-    payload_field_commitments: dict[str, dict[str, str]],
+    payload_commitment_value: str,
 ) -> str:
     """content_hash per REQUIREMENTS.md 6b/6c — covers every persisted field except
     prev_hash, which is deliberately excluded and kept as a separate field (6b).
+    Takes the already-computed payload commitment rather than the raw commitments
+    dict, so callers control how that value was derived (fresh at write time,
+    mixed fresh/retained at verify time).
     """
     content = {
         "sequence_number": sequence_number,
@@ -85,7 +96,7 @@ def compute_content_hash(
         "resource_type": resource_type,
         "resource_id": resource_id,
         "timestamp": canonical_timestamp(timestamp),
-        "payload_commitment": payload_commitment(payload_field_commitments),
+        "payload_commitment": payload_commitment_value,
     }
     return sha256_hex(canonical_json(content))
 

@@ -31,7 +31,9 @@ class AuditEvent(Base):
     resource_type: Mapped[str | None] = mapped_column(String, nullable=True)
     resource_id: Mapped[str | None] = mapped_column(String, nullable=True)
     payload: Mapped[dict[str, object] | None] = mapped_column(JSONB, nullable=True)
-    payload_field_commitments: Mapped[dict[str, object] | None] = mapped_column(
+    # {fieldName: {"hash": str, "salt": str}} — a fixed shape we control (unlike
+    # payload, which is arbitrary caller-supplied JSON), so typed precisely.
+    payload_field_commitments: Mapped[dict[str, dict[str, str]] | None] = mapped_column(
         JSONB, nullable=True
     )
     timestamp: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

@@ -7,6 +7,7 @@ from audit_log_service.core.hashing import (
     GENESIS_HASH,
     compute_content_hash,
     compute_payload_commitments,
+    payload_commitment,
     record_hash,
 )
 from audit_log_service.models import AuditEvent
@@ -55,7 +56,7 @@ async def append_event(
         resource_type=resource_type,
         resource_id=resource_id,
         timestamp=timestamp,
-        payload_field_commitments=payload_field_commitments,
+        payload_commitment_value=payload_commitment(payload_field_commitments),
     )
 
     event = AuditEvent(

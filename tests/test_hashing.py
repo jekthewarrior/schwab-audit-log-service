@@ -6,6 +6,7 @@ from audit_log_service.core.hashing import (
     compute_payload_commitments,
     field_hash,
     payload_commitment,
+    payload_commitment_from_hashes,
     record_hash,
 )
 
@@ -40,8 +41,17 @@ def test_payload_commitment_only_depends_on_hashes_not_salts() -> None:
     assert payload_commitment(commitments) == payload_commitment(reconstructed)
 
 
+def test_payload_commitment_agrees_with_from_hashes() -> None:
+    # payload_commitment (write-time convenience) and payload_commitment_from_hashes
+    # (shared by verify's mixed fresh/retained reconstruction) must produce the same
+    # value for the same underlying hashes.
+    commitments = compute_payload_commitments({"a": 1, "b": "two"})
+    hashes_by_field = {k: v["hash"] for k, v in commitments.items()}
+    assert payload_commitment(commitments) == payload_commitment_from_hashes(hashes_by_field)
+
+
 def test_content_hash_changes_if_any_covered_field_changes() -> None:
-    commitments = compute_payload_commitments({"ip": "127.0.0.1"})
+    commitment_value = payload_commitment(compute_payload_commitments({"ip": "127.0.0.1"}))
     recorded_at = datetime(2026, 1, 1, tzinfo=UTC)
     timestamp = datetime(2026, 1, 1, tzinfo=UTC)
 
@@ -53,7 +63,7 @@ def test_content_hash_changes_if_any_covered_field_changes() -> None:
         resource_type="SESSION",
         resource_id="sess-1",
         timestamp=timestamp,
-        payload_field_commitments=commitments,
+        payload_commitment_value=commitment_value,
     )
 
     # sequence_number is covered by content_hash (REQUIREMENTS.md 6b) precisely so
@@ -66,7 +76,7 @@ def test_content_hash_changes_if_any_covered_field_changes() -> None:
         resource_type="SESSION",
         resource_id="sess-1",
         timestamp=timestamp,
-        payload_field_commitments=commitments,
+        payload_commitment_value=commitment_value,
     )
     assert original != tampered
 
