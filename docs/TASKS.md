@@ -265,16 +265,46 @@ folded into A4.1.
 
 ### B2. Retention
 
-- [ ] **B2.1 — `POST /audit/retention/sweep` endpoint.** Finds records older than
+- [x] **B2.1 — `POST /audit/retention/sweep` endpoint.** Finds records older than
   the configured `RETENTION_WINDOW_DAYS` (global setting) not already archived;
   nulls detail fields (`event_type`, `actor_id`, `resource_type`, `resource_id`,
   `payload`, `payload_field_commitments`, `timestamp`, `recorded_at`); sets
   `archived=true`/`archived_at`; runs through `maintenance_role`.
+  **Design point not settled in `REQUIREMENTS.md`, resolved during implementation:**
+  eligibility is based on `recorded_at` (server-assigned), not the caller-supplied
+  `timestamp` — same trust-boundary reasoning as 7d's chain order and 4a's
+  timestamp-role split. A caller reporting a misleading `timestamp` shouldn't be
+  able to influence when their own record becomes eligible for archival.
   *Implements: 1a, 1d, 1b, 1c (mechanism).* Depends on: A1.1, A1.3.
-- [ ] **B2.2 — Append `RECORD_ARCHIVED` system event per sweep.** Mirrors B1.2's
-  pattern for redaction — documents which `sequence_number`(s) were archived and
-  when.
+  → `src/audit_log_service/services/retention.py`, `src/audit_log_service/api/retention.py`,
+  `src/audit_log_service/schemas/retention.py`, `retention_window_days` in
+  `core/config.py`.
+- [x] **B2.2 — Append `RECORD_ARCHIVED` system event per sweep.** One event per
+  sweep *run* (not one per archived record), payload listing every
+  `sequence_number` archived — matches the task description's "per sweep" framing.
+  Idempotent: a sweep that finds nothing eligible appends no event, and an
+  already-archived record is never a candidate again.
   *Implements: 1c (audit trail for the archival action).* Depends on: A2.3, B2.1.
+  **Correctness gap found and fixed during implementation, not in the original task
+  description:** two concurrent sweep calls could both read the same candidate set
+  before either archives it, producing two `RECORD_ARCHIVED` events over the same
+  records. Fixed by acquiring `append_event`'s advisory lock explicitly at the top
+  of `sweep_retention`, before reading candidates — safe to acquire twice in one
+  transaction (Postgres advisory locks are reentrant per-transaction), and fully
+  serializes sweeps against each other and against regular appends using the same
+  lock key already established in 7c.
+
+  **Verified live against the real stack:** wrote two records, backdated one's
+  `recorded_at` to two years ago via direct SQL (simulating age, since `recorded_at`
+  is server-assigned and can't be set through the write API), ran the real sweep
+  endpoint against the actual default 365-day window — confirmed only the old
+  record was archived, the recent one untouched, and a `RECORD_ARCHIVED` event
+  correctly appended. Confirmed `/audit/verify` stays intact. Confirmed default
+  query exclusion / `includeArchived=true` opt-in. Confirmed idempotency — a second
+  sweep call archives nothing. Confirmed `content_hash`/`prev_hash` on the archived
+  record are byte-for-byte unchanged. Confirmed via direct `psql` as `app_role` that
+  it still cannot perform the archival `UPDATE` — the same negative test pattern as
+  A1.3/B1, now validated against this third caller of `maintenance_role`.
 
 ### B3. Bulk export
 

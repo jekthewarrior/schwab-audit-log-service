@@ -893,3 +893,42 @@ fires — empirically confirms the retained hash is transitively protected via
 and B2 can proceed independently.
 
 **Rationale:** See `docs/TASKS.md`, task entries B1.1, B1.2.
+
+---
+
+## 2026-08-22 — Implementation: B2 (retention)
+
+**Intent:** Build the retention sweep — the second Scenario B feature.
+
+**AI produced:** `services/retention.py`, `api/retention.py`,
+`schemas/retention.py`, `retention_window_days` setting in `core/config.py`.
+
+**Design point resolved during implementation, not settled in `REQUIREMENTS.md`:**
+which timestamp determines retention eligibility. Chose `recorded_at`
+(server-assigned) over the caller-supplied `timestamp`, for the same trust-boundary
+reason already established for chain order (7d) and the query time-filter split
+(4a) — a caller shouldn't be able to influence their own record's retention
+eligibility by misreporting when it happened.
+
+**Correctness gap found and fixed, not in the original task description:** while
+implementing, noticed that reading candidate records and then archiving them wasn't
+itself serialized — two concurrent sweep calls could both see the same candidates
+before either commits, producing duplicate `RECORD_ARCHIVED` events over the same
+records. Fixed by acquiring the append service's advisory lock explicitly at the
+start of the sweep, before the candidate query — reentrant-safe within a
+transaction, so calling `append_event` later in the same function (which acquires
+it again) is harmless.
+
+**Verification:** live-tested against the real stack using a technique worth
+noting — since `recorded_at` is server-assigned and can't be set through the write
+API, backdated it via direct SQL to simulate an old record, then ran the sweep
+against the actual default 365-day window (not a shortened test-only window).
+Confirmed correct selective archival, `RECORD_ARCHIVED` event content, chain
+integrity (`content_hash`/`prev_hash` unchanged, verify stays intact), default-query
+exclusion, idempotency (second sweep call archives nothing), and — via direct
+`psql` as `app_role` — that the role split holds for this third caller of
+`maintenance_role` too, not just the two already tested (A1.3, B1).
+
+**Decision:** Proceeding to B3 (bulk export) next.
+
+**Rationale:** See `docs/TASKS.md`, task entries B2.1, B2.2.

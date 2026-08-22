@@ -29,5 +29,8 @@ class Settings(BaseSettings):
     app_role_password: str = "app_role_dev_pw"
     maintenance_role_password: str = "maintenance_role_dev_pw"
 
+    # REQUIREMENTS.md Scenario B 1b: single global setting, not per-policy-rule.
+    retention_window_days: int = 365
+
 
 settings = Settings()
