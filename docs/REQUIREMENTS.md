@@ -191,11 +191,11 @@ top-to-bottom.
 - **6c. Canonical serialization:** canonicalize the *parsed Python value*, not raw
   request bytes — recursively sort all object keys, fixed separators, no whitespace
   (`json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=True)`),
-  UTF-8 encoded before hashing. Applied uniformly to the whole content structure
-  (all eight fields, including recursively inside `payload`) via one function, not two
-  mechanisms for schema fields vs. payload. Timestamps normalized to canonical ISO-8601
-  (fixed precision, UTC `Z` suffix) at the schema layer before reaching the hash
-  function.
+  UTF-8 encoded before hashing. Applied to the seven non-`payload` content fields
+  (`sequence_number`, `recordedAt`, `eventType`, `actorId`, `resourceType`,
+  `resourceId`, `timestamp`) as one combined value, same as before. Timestamps
+  normalized to canonical ISO-8601 (fixed precision, UTC `Z` suffix) at the schema
+  layer before reaching the hash function.
   - **Why parsed value, not raw bytes:** Postgres JSONB does not guarantee byte-for-byte
     round-tripping of submitted JSON text (can reformat numbers, doesn't preserve exact
     whitespace). Hashing raw bytes at write time and re-deriving from raw bytes read
@@ -205,6 +205,20 @@ top-to-bottom.
   - **Known test to write, not a design gap:** numeric int-vs-float fidelity through the
     JSONB round-trip (e.g. `100` vs `100.0` in a payload) — needs an explicit test
     rather than an assumption.
+  - **⚠️ REVISED under Scenario B (see Scenario B, item 3a):** `payload` is
+    **no longer** folded into `contentHash` as a single flat canonicalized blob. A flat
+    hash over concatenated data is an all-or-nothing commitment — there's no way to
+    prove a subset of its input is unchanged without possessing the complete original,
+    which makes selective field redaction (Scenario B) impossible without destroying
+    verifiability of every *other* field in the payload too. `payload` is instead
+    hashed as a **per-field salted commitment structure**:
+    `fieldHash(key) = SHA256(salt || canonical(key) || canonical(value))` for each
+    top-level field, with `payloadCommitment = SHA256(canonical(sorted
+    (fieldName, fieldHash) pairs))` substituted for the raw payload value as
+    `contentHash`'s eighth input. Full rationale, the redaction mechanism this enables,
+    and why salting is required (low-entropy values like SSNs/account numbers are
+    brute-forceable from an unsalted hash) are in Scenario B, item 3a — not
+    duplicated here to avoid the two copies drifting out of sync.
 
 ##### 6d + 8a — Self-hash vs. combined block hash, paired with verify's violation taxonomy
 - **Status:** ✅ Decided
@@ -362,7 +376,353 @@ Decided. Next: translate this into `docs/TASKS.md`.
 
 ## Scenario B — Retention & Redaction
 
-_Not yet started._
+### Raw Requirements
+
+1. **Retention policy** — records older than a configurable window should be
+   archivable or soft-deletable.
+   *Intent:* support data lifecycle management / compliance-driven retention windows
+   without literally deleting audit history in a way that breaks tamper-evidence.
+
+2. **Verify must not false-positive on archived records** — `/audit/verify` must
+   handle the presence of archived records correctly, without reporting a false
+   positive break for records legitimately archived per policy.
+   *Intent:* archiving is sanctioned, policy-driven, and distinct from tampering —
+   verify needs a way to tell the two apart. This requirement only makes sense if
+   archiving actually does something to a record that would otherwise look like
+   tampering to the normal chain walk — a passive status flag on an untouched row
+   would give verify nothing to false-positive on. Signals archiving needs to reach
+   deeper than a flag.
+
+3. **Structured redaction** — fields within a record's `payload` may contain
+   sensitive data (account numbers, personal identifiers) that must be redactable for
+   privacy, without breaking the hash chain.
+   *Intent:* satisfy data privacy requirements (right-to-erasure / data minimization
+   for specific fields) while preserving tamper-evidence for the rest of the record and
+   the chain overall.
+
+4. **Redaction must not invalidate the hash** — explicitly flagged by the source
+   document as "a genuine engineering problem." The original hash covers the original
+   value; naive removal invalidates it. Design and implement a scheme satisfying both
+   tamper-evidence and privacy; document trade-offs and limitations of the chosen
+   approach.
+   *Intent:* the document is explicitly signaling this is the crux of Scenario B —
+   demonstrated engineering reasoning is expected here, not just an implementation.
+
+5. **Bulk export** — endpoint to export all records for a given `resourceId` or
+   `actorId` as a self-contained, verifiable bundle; the bundle must include enough
+   chain metadata for a recipient to independently verify the included records haven't
+   been altered since export.
+   *Intent:* let a third party with no access to the live database independently
+   verify an extracted subset's integrity — connects directly to the export nuance
+   already flagged and accepted as a trade-off under 7a (single global chain means
+   exported records are a non-contiguous slice of it).
+
+### Ambiguities & Decisions
+
+Grouped by dependency, same approach as Scenario A. The raw-requirements pass already
+surfaced a load-bearing dependency: req 2's "verify must not false-positive on
+archived records" only makes sense if archiving does something to a record that would
+otherwise look like tampering — which means retention likely reuses whatever mechanism
+redaction establishes for removing/relocating content without invalidating hashes.
+Redaction is worked first as the foundational mechanism.
+
+#### Group 1 — Redaction mechanism (foundational)
+
+##### 3a — Core mechanism: per-field salted-hash commitments
+- **Status:** ✅ Decided
+- **Decision:** `payload` is hashed as a **per-field salted commitment structure**,
+  not a single flat blob. For each top-level field: `fieldHash(key) = SHA256(salt ||
+  canonical(key) || canonical(value))`, salt fresh-random per field, stored alongside
+  the hash (not secret — defeats brute-force, doesn't need to be hidden).
+  `payloadCommitment = SHA256(canonical(sorted (fieldName, fieldHash) pairs))`
+  substitutes for the raw payload value as `contentHash`'s eighth input (6b/6c
+  otherwise unchanged). To redact a field: overwrite its raw stored value; retain its
+  `(hash, salt)` forever, untouched. At verify: recompute `fieldHash` fresh for
+  present fields (proves untouched fields weren't altered); use the retained hash
+  directly for redacted fields; feed the reconstructed `payloadCommitment` into the
+  normal `contentHash` recomputation and compare against the permanently-stored value.
+- **Rationale — why not a single whole-payload hash+salt:** a flat hash over
+  concatenated data is a mathematically all-or-nothing commitment — there's no way to
+  prove a subset of the original input is unchanged without possessing the complete
+  original (that selective-disclosure property doesn't exist for a plain hash; it's
+  exactly what distinguishes a Merkle-style commitment scheme from one). Practically:
+  with a whole-blob hash, the instant *any* field is redacted, the retained hash can
+  never again be recomputed from anything, so verification is lost not just for the
+  redacted field but for *every other field in that payload too*. Concrete failure
+  this would open: a `RECORD_UPDATED` event with `payload = {accountNumber,
+  previousValue, newValue, updatedBy}` where `accountNumber` is legitimately redacted
+  — under whole-blob hashing, that one legitimate redaction also silently disables
+  verification of `previousValue`/`newValue`/`updatedBy`, letting an attacker (or
+  someone exceeding their redaction authorization) tamper with those fields
+  undetected, at the same time or any time after. Per-field commitments catch that
+  immediately, since each field's hash is independently checkable.
+  - **Complexity note:** not meaningfully more expensive than a single hash+salt —
+    same primitive (salted SHA-256), applied per top-level field instead of once over
+    the concatenated blob, plus a small map instead of a single pair.
+  - **Security note — salting is load-bearing, not optional:** low-entropy sensitive
+    values (a 9-digit SSN has only `10^9` possibilities) are trivially brute-forceable
+    from an unsalted hash via dictionary attack — that's the appearance of redaction,
+    not actual privacy, for exactly the kind of data (account numbers, personal
+    identifiers) the requirement calls out. Salting forces brute-force cost to be paid
+    per field rather than precomputed once.
+  - **Amends the already-locked Scenario A decision 6c** (payload was previously
+    hashed as one flat canonical blob) — cross-referenced there rather than
+    duplicated, to avoid the two copies drifting.
+
+##### 3c — Reversible or permanent?
+- **Status:** ✅ Decided
+- **Decision:** Irreversible by design. Once the raw value is overwritten, only its
+  one-way salted hash remains — no path back.
+- **Rationale:** Correct semantic match for "redaction for data privacy" — a
+  reversible redaction is a display toggle, not erasure, and wouldn't satisfy genuine
+  privacy requirements (GDPR-style right-to-erasure semantics). Crypto-shredding
+  (encrypt, then destroy the key) was the alternative mechanism that would have
+  offered reversibility, but wasn't needed here and would have required pre-encrypting
+  designated fields at write time plus real key-management infrastructure — not
+  justified without a reversibility requirement driving it.
+
+##### 3b — Trigger model
+- **Status:** ✅ Decided
+- **Decision:** Operator-facing endpoint (e.g. `POST
+  /audit/events/{sequence_number}/redact` naming a field path) — not
+  automatic/policy-driven.
+- **Rationale:** Matches the text ("must be redactable," a capability, not a
+  schedule) and matches how real redaction requests actually arise (a data-subject
+  erasure request, a legal order) rather than a predictable age-based trigger.
+  Redaction is itself recorded as a new system event appended to the same chain
+  (documenting which record/field, who, when) — becomes the authorization trail 3f
+  needs, turning "this record looks incomplete" into something verifiable rather than
+  a red flag.
+
+##### 3d — Granularity
+- **Status:** ✅ Decided
+- **Decision:** Top-level `payload` fields only (not arbitrary nested paths), and
+  single-record only (not bulk/cross-record redaction).
+- **Rationale:** The mechanism generalizes to full recursive Merkle-tree commitments
+  over arbitrarily nested JSON, but that's meaningfully more implementation surface
+  (recursive tree construction/verification, path-addressing syntax) with nothing in
+  the requirement asking for it. A flat per-field map keeps the commitment structure
+  simple while still solving the stated problem correctly — a deliberate, documented
+  scope boundary: sensitive data nested inside a sub-object should be structured as
+  its own top-level field, or the sub-object redacted wholesale. Single-record scope
+  matches the text literally ("fields within *a record's* payload").
+
+#### Group 2 — Redaction surfacing (depends on Group 1)
+
+##### 3e — Query API representation of a redacted field
+- **Status:** ✅ Decided
+- **Decision:** A structured marker replaces the raw value at redaction time:
+  `{"__redacted__": true, "redactedAt": "<ISO8601>", "redactionEventSeq": <seq>}`,
+  where `redactionEventSeq` points at the `FIELD_REDACTED` system event (3b) that
+  authorized it. The Query API needs no redaction-aware branching — the marker *is*
+  the stored value once redaction happens, served like any other field.
+- **Rationale:** A bare `null` was the simpler alternative but erases the distinction
+  between "never had a value" and "value was deliberately removed" — exactly the kind
+  of information an audit log exists to preserve. Embedding `redactionEventSeq`
+  directly in the marker means anyone looking at the record can trace who/when/why
+  without knowing to look elsewhere.
+
+##### 3f — Verify's reporting of legitimately redacted records
+- **Status:** ✅ Decided
+- **Decision:** No special case needed — a record with legitimately redacted fields
+  verifies identically to a fully-intact one.
+- **Rationale:** Direct consequence of 3a's design: verify recomputes `contentHash`
+  using the retained per-field hash for redacted fields and a fresh hash for present
+  ones, so there's no separate code path and nothing that could produce a false
+  positive. Contrasts with req 2 (retention), which *explicitly* asks verify to handle
+  archived records without false positives — no equivalent explicit ask exists for
+  redaction, only that the scheme "satisfies tamper-evidence," already guaranteed by
+  3a's mechanism. Discoverability of which records have redactions is served by 3b's
+  `FIELD_REDACTED` events via the ordinary Query API, not by verify's response —
+  keeps verify's job narrow (intact vs. broken, and where) rather than becoming a
+  general audit-analytics endpoint.
+
+#### Group 3 — Retention (depends on Group 1's mechanism)
+
+##### 1d — Does archiving reduce/relocate data, or only change lifecycle status?
+- **Status:** ✅ Decided — the central fork the rest of Group 3 depends on.
+- **Decision:** Reduces data. Same textual logic as the raw-requirements pass: req 2's
+  "verify must not false-positive on archived records" only makes sense if archiving
+  does something that would otherwise look like tampering — a passive status flag on
+  an untouched row gives verify nothing to false-positive on.
+
+##### 1a — Archivable vs. soft-deletable: two mechanisms, or one?
+- **Status:** ✅ Decided
+- **Decision:** One mechanism, not two features. Given 1d, "archived" effectively *is*
+  a soft-delete of content — the document offers two names for the same underlying
+  capability, not two things to build separately.
+
+##### Mechanism (covers 1a/1d together)
+- **Decision:** **Not** a full-record reuse of 3a's per-field commitment structure.
+  Per-field commitments exist to enable *selective* disclosure — proving some fields
+  unchanged while another is hidden. Full-record archival doesn't need that; nothing
+  is being selectively proven, the whole record's content goes away at once. Simpler
+  design: **null out the detail fields** (`eventType`, `actorId`, `resourceType`,
+  `resourceId`, `payload`, `timestamp`, `recordedAt`), set `archived=true` +
+  `archivedAt`, while `sequence_number`, `contentHash`, `prevHash` remain forever
+  untouched — those three are never affected by anything, ever.
+- Each sweep appends a **`RECORD_ARCHIVED` system event** to the chain (mirrors 3b's
+  `FIELD_REDACTED` event design), so archival actions are themselves part of the
+  discoverable, tamper-evident history.
+
+##### 2a — What does archiving do to a record's stored representation that verify would otherwise flag?
+- **Status:** ✅ Decided
+- **Decision:** Nulls the detail fields listed above (per the Mechanism entry),
+  leaving verify's standard content-recompute step with missing inputs.
+
+##### 2b — Does verify need new logic to validate a "tombstone" record?
+- **Status:** ✅ Decided
+- **Decision:** Yes — one explicit new branch: if `archived=true`, skip
+  content-recompute for that record (trust the permanently-stored `contentHash`
+  directly) and perform the **link check normally**, unchanged. The retained
+  `contentHash` stays protected from undetected tampering via 6d's `recordHash`
+  cascade — altering it would break the next record's link exactly as it would for
+  any other record.
+- **Rationale:** Without this branch, verify would recompute `contentHash` from
+  now-null fields and produce a spurious `CONTENT_MISMATCH` — exactly the false
+  positive req 2 warns against.
+
+##### 2c — Does an archived record still occupy its `sequence_number` slot for gap-detection purposes?
+- **Status:** ✅ Decided
+- **Decision:** Yes, unaffected. Archiving never removes a row, only nulls its
+  content — the row and its `sequence_number` stay in the primary table forever, so
+  gap detection has nothing to trip on.
+
+##### 1b — Configurable window: global setting vs. per-policy-rule
+- **Status:** ✅ Decided
+- **Decision:** Single global setting (e.g. `RETENTION_WINDOW_DAYS`), not per-
+  `eventType`/`resourceType` policy. Consistent with 5c's page-size precedent —
+  tunable constant, no requirement signal for finer granularity.
+
+##### 1c — What triggers archival: scheduled sweep, on-demand endpoint, or lazy/computed-at-query-time status?
+- **Status:** ✅ Decided
+- **Decision:** Admin-triggered sweep endpoint (e.g. `POST /audit/retention/sweep`),
+  not an in-process scheduler.
+- **Rationale:** Building a task-scheduling subsystem (Celery/APScheduler) is
+  disproportionate to what's asked. An external cron hitting this endpoint is the
+  standard, simpler operational pattern — scheduling is a deployment concern, not
+  something the service needs to own internally.
+
+##### 1e — Do archived records stay in default Query API results?
+- **Status:** ✅ Decided
+- **Decision:** Excluded from default results, opt-in via a flag (e.g.
+  `includeArchived=true`).
+- **Documented limitation:** once archived, a record's full original content is
+  **not retrievable** through this service — mirrors redaction's irreversibility, at
+  record granularity. A cold-storage tier preserving full content for later retrieval
+  is a reasonable extension, explicitly scoped out given the time budget.
+
+##### DB privilege — closes Scenario A's 2a forward-looking note
+- **Decision:** Both redaction (overwriting a payload field) and archival (nulling
+  detail columns) require `UPDATE` access the base `app_role` (SELECT/INSERT only)
+  doesn't have. Both share one separate, narrowly-scoped role using Postgres
+  column-level grants — `UPDATE` on exactly the payload/detail columns these two
+  operations touch, and **never** on `sequence_number`, `contentHash`, or `prevHash`,
+  which stay permanently un-updatable by anything, including this elevated role.
+
+#### Group 4 — Bulk export (depends on Groups 1–3)
+
+##### 5a — What "verifiable" means given 7a's single global chain: per-record self-consistency vs. inclusion proof
+- **Status:** ✅ Decided
+- **Decision:** Per-record content self-consistency (recompute each record's
+  `contentHash` from its own included fields, per 3a's mechanism) **plus a
+  bundle-level digital signature** — not a Merkle-style inclusion proof anchored to
+  the live chain.
+- **Rationale:** Self-consistency alone is weak — if a record's content and its
+  accompanying hash are both plain fields in the same mutable file, an attacker
+  editing the bundle can edit both together, consistently, defeating the check
+  entirely (same problem as a checksum shipped in the same download it verifies). A
+  bundle-level signature is what actually delivers "not been altered since export":
+  an attacker without the private signing key can edit the bundle but can't produce a
+  signature that still validates.
+- **Alternative considered and rejected — constructing a second, export-scoped chain
+  over just the filtered records:** would let a recipient run the same walk-and-verify
+  algorithm against the bundle as `/audit/verify` runs live, but adds no real security
+  once the bundle is already signed. Content-tampering detection is identical either
+  way (content hashes are unchanged). What a second chain adds is a "no gaps among the
+  *included* records" claim — but the only entity capable of omitting a record from
+  the export is the exporting service itself, at export time, which is the same
+  entity that signs the bundle; a compromised/dishonest signer can produce a
+  perfectly self-consistent rechained bundle missing a record just as easily as a
+  flat one. Post-export file tampering (reordering, dropping a record) is already
+  caught by the bundle-level signature invalidating on any edit — a second chain
+  construct duplicates that protection rather than adding to it.
+- **Real risk identified, not cryptographic — trust calibration:** a rechained bundle
+  that a recipient can "verify" with a familiar chain-walk is easy to over-read as
+  "proven complete and authoritative," when the actual guarantee is narrower: these
+  specific records are self-consistent and the signer vouches for them. Rechaining
+  doesn't strengthen the underlying guarantee, it just makes it *look* stronger —
+  a genuine hazard in a compliance context where over-reading matters. Documented
+  explicitly rather than left implicit: the bundle's "verified" status means
+  self-consistent + signed as of export time, **not** proven complete relative to the
+  live system. Completeness/authenticity ultimately still rests on trusting the
+  signer either way — same fundamental limitation already accepted for the live
+  chain's lack of external anchoring (6d/8a).
+- **Where a stronger design would go, if ever needed:** anchor the export's genesis to
+  the actual `recordHash` of the record immediately preceding the first exported one
+  in the real global chain (an inclusion-proof-style design), rather than an
+  arbitrary export-local constant — ties the bundle back to the live chain's real
+  structure. Meaningfully more implementation surface (proof material per record
+  relative to its *actual* neighbors, not just its exported ones); nothing in the
+  requirement asks for this strength, so deliberately scoped out.
+
+##### 5b — Does the bundle carry a chain-tail anchor/snapshot at export time?
+- **Status:** ✅ Decided
+- **Decision:** Yes — `chainTailSnapshot` (`sequenceNumber` + `recordHash` of the
+  global chain's tail at export time), included as part of the *signed* content.
+- **Rationale:** Not required to satisfy the literal requirement (the signature
+  already does), but cheap to include and gives forward value: if the signing key
+  were ever compromised, an independently-published external checkpoint of chain-tail
+  state (future work, per 6d/8a) would be the only thing that could still catch a
+  forged bundle, and this snapshot is what a recipient would cross-check against it.
+
+##### 5c — Bundle format and whether bundle-level integrity (signing) is needed
+- **Status:** ✅ Decided
+- **Decision:** JSON, returned by the export endpoint, structure:
+  ```json
+  {
+    "exportedAt": "<ISO8601>",
+    "filter": {"resourceId": "..."},
+    "chainTailSnapshot": {"sequenceNumber": N, "recordHash": "..."},
+    "records": [{"...fields...": "...", "contentHash": "...", "prevHash": "...", "sequenceNumber": N}],
+    "signingKeyId": "...",
+    "signature": "<Ed25519 signature over the canonical serialization of everything above>"
+  }
+  ```
+  `records` sorted by original `sequence_number` — cheap, gives a recipient an
+  informal at-a-glance sense of gaps, and is already covered by the signature (so
+  reordering after export is still caught) without inventing a second chain
+  construct. Signed with **Ed25519** (asymmetric — the service holds the private
+  signing key, the public key is distributed/documented for recipients to verify
+  against). Asymmetric, not HMAC/symmetric, because the recipient is a genuine
+  external third party (regulator, auditor) — a symmetric scheme would let anyone
+  capable of verifying also forge new bundles. `signingKeyId` supports future key
+  rotation without invalidating older exports.
+- **Operational note, not solved further here:** the private signing key needs secure
+  generation/storage (env-var/secrets-manager-loaded at startup, never committed) — a
+  proper KMS/HSM is the production answer; an env-var-loaded key is the proportional
+  choice for this prototype, documented as such rather than silently simplified.
+
+##### 5d — How does export represent a record with redacted fields?
+- **Status:** ✅ Decided
+- **Decision:** No special handling — falls out of 3a/3e for free. Export serializes
+  the record's current state, redaction markers included, and per-record hash
+  verification works identically to the live system since it already uses retained
+  per-field hashes for redacted fields.
+
+##### 5e — Can archived records be exported?
+- **Status:** ✅ Decided
+- **Decision:** Yes. Follows 2b's rule — an exported archived record is marked
+  `archived`/`archivedAt`, and its verification trusts the stored `contentHash`
+  directly (skipping recompute from now-null fields), exactly as live verify does.
+  Ultimately backstopped by the bundle-level signature either way.
+
+### Next steps
+
+Scenario B's ambiguity list is fully resolved — every item across all four groups is
+Decided. Next: Scenario C's requirement clarification (intentionally under-specified —
+different process than A/B, since there's no source text to extract ambiguities
+against, only a clarified requirement statement to construct).
 
 ---
 

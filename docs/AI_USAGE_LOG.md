@@ -389,3 +389,211 @@ entirely).
 **Rationale:** See `docs/REQUIREMENTS.md`, Scenario A, item "2a." **This completes
 Scenario A's full ambiguity list** — all four groups, every item, Decided. Next step:
 translate `docs/REQUIREMENTS.md` into `docs/TASKS.md`.
+
+---
+
+## 2026-08-21 — Scenario A requirements committed; Scenario B decomposition begins
+
+**Action:** Committed `docs/REQUIREMENTS.md` and the accumulated `docs/AI_USAGE_LOG.md`
+entries (commit `bb1cf13`) at the user's request, marking Scenario A's requirement
+phase complete. Deferred `docs/TASKS.md` — user directed running the same
+requirement-refinement process (raw requirements → ambiguities → dependency-ordered
+grouping → resolve one at a time) across Scenario B and then Scenario C first, on the
+reasoning that finishing requirement discovery for all three scenarios up front reduces
+rework if a Scenario A decision needs revisiting once B/C's requirements are fully
+understood.
+
+**AI produced:** Raw-requirement extraction (5 items) with intent annotations for
+Scenario B, following the same format used for Scenario A. Added to
+`docs/REQUIREMENTS.md` under the Scenario B section. One intent annotation flagged a
+textual inference worth carrying into the ambiguity discussion: requirement 2 (verify
+must not false-positive on archived records) only makes sense if archiving does
+something to a record that would otherwise look like tampering — implying archiving
+can't be a purely passive status flag on an untouched row.
+
+**Decision:** User to confirm before proceeding to ambiguity identification, per the
+same phased cadence used throughout Scenario A (extract → review → identify
+ambiguities → reorder by dependency → resolve).
+
+---
+
+## 2026-08-22 — Scenario B ambiguity list + dependency ordering
+
+**Intent:** Identify ambiguities against Scenario B's five raw requirements and
+propose a dependency ordering, same process as Scenario A.
+
+**AI produced:** Full ambiguity list across all five requirements (18 items total:
+1a–1e, 2a–2c, 3a–3f, 5a–5e), plus a proposed four-group dependency ordering — unlike
+Scenario A, proposed upfront in the same pass rather than as a separate reordering
+step, since the raw-requirements pass already surfaced the key dependency directly
+from the text: req 2 (verify must not false-positive on archived records) only makes
+sense if archiving does something to a record that would otherwise look like
+tampering, implying retention likely reuses whatever mechanism redaction establishes.
+Groups: (1) redaction mechanism — foundational; (2) redaction surfacing — depends on
+1; (3) retention — depends on 1's mechanism; (4) bulk export — depends on 1–3 plus the
+already-accepted 7a export-nuance trade-off.
+
+**Decision:** User confirmed the list and ordering, no changes requested. Added to
+`docs/REQUIREMENTS.md` under Scenario B. Proceeding to Group 1 (redaction mechanism:
+3a, 3c, 3b, 3d).
+
+**Rationale:** See `docs/REQUIREMENTS.md`, Scenario B, "Ambiguities & Decisions," for
+the full grouped list.
+
+---
+
+## 2026-08-22 — Decision: redaction mechanism (3a, 3c, 3b, 3d) — amends Scenario A's 6c
+
+**Intent:** Resolve Group 1 — the document's explicitly named "genuine engineering
+problem": how to make a payload field's value irretrievable while keeping the record's
+hash verifiable.
+
+**AI produced (round 1):** Proposed per-field salted-hash commitments — hash each
+top-level `payload` field independently with a random salt, commit to the set via
+`payloadCommitment`, substitute that for the raw payload value in `contentHash`.
+Explained this requires amending Scenario A's already-locked 6c (which hashed
+`payload` as one flat blob). Also proposed: operator-facing redaction endpoint with a
+chain-appended audit event (3b); irreversible by design (3c); top-level-field,
+single-record granularity (3d).
+
+**User pushback:** Asked directly why a single whole-payload salted hash wasn't
+sufficient — i.e. why not just retain one hash+salt for the original payload and
+directly edit the stored value.
+
+**AI response:** Gave the rigorous reason rather than an appeal to convention: a flat
+hash over concatenated data is a mathematically all-or-nothing commitment — there's no
+way to prove a subset of the original input is unchanged without possessing the
+complete original (no selective-disclosure property without additional structure,
+which is exactly what a Merkle-style commitment provides and a flat hash doesn't).
+Concretely: with one whole-payload hash, redacting any single field permanently
+destroys the ability to verify every *other* field in that payload too, not just the
+redacted one. Walked through a concrete failure case (a `RECORD_UPDATED` event where
+legitimate redaction of `accountNumber` would also silently disable detection of
+tampering with unrelated fields like `newValue`) to make the consequence concrete
+rather than abstract. Also noted the complexity delta between one hash and per-field
+hashes is small (same primitive, applied more times) — not a costly trade-off.
+
+**Decision:** **FINAL.** User confirmed the reasoning resolved the concern and to lock
+in all four items, and to update 6c to reflect the amendment.
+
+**Rationale:** See `docs/REQUIREMENTS.md`, Scenario B, item "3a" (full writeup,
+including the salting-is-load-bearing security note), and Scenario A, item "6c" (now
+carries a flagged `⚠️ REVISED` note cross-referencing 3a rather than duplicating the
+mechanism, to avoid the two copies drifting out of sync). This is the second case in
+this project where a user question surfaced a real gap or led to a stronger design
+before implementation began — logged in full per the traceability requirement (§4.3).
+
+---
+
+## 2026-08-22 — Decision: redaction surfacing (3e, 3f)
+
+**Intent:** Resolve Group 2 — how a redacted field is represented in Query API
+responses (3e), and whether verify needs special handling/reporting for records with
+redacted fields (3f).
+
+**AI produced:** Structured redaction marker embedding a pointer back to the
+authorizing `FIELD_REDACTED` event (`redactionEventSeq`), rather than a bare `null`,
+specifically to preserve the "deliberately removed" vs. "never had a value"
+distinction. For 3f, concluded no special verify handling is needed at all — a direct,
+useful consequence of how 3a's mechanism was designed (redacted records verify
+identically to intact ones), contrasted explicitly with req 2's retention requirement
+which *does* explicitly ask for false-positive handling, to show this wasn't a gap but
+an actual property of the chosen design.
+
+**Decision:** **FINAL.** User confirmed to lock in both, no pushback.
+
+**Rationale:** See `docs/REQUIREMENTS.md`, Scenario B, items "3e" and "3f." Closes out
+Group 2 entirely. Next: Group 3 — retention (1a, 1d, 1b, 1c, 1e, 2a, 2b, 2c).
+
+---
+
+## 2026-08-22 — Decision: retention/archival (Group 3) — reuses and simplifies from the redaction mechanism
+
+**Intent:** Resolve Group 3 in full — whether archiving reduces data or just flags
+status (1d, the central fork), whether "archivable" and "soft-deletable" are one
+mechanism or two (1a), the concrete archival mechanism, verify's handling of archived
+records (2a/2b/2c), the retention window's configurability (1b), what triggers
+archival (1c), and default query visibility (1e). Also closes the forward-looking DB
+privilege note left open at the end of Scenario A's 2a decision.
+
+**AI produced:** Resolved 1d from the same textual signal identified during the raw
+requirements pass (req 2's false-positive concern only makes sense if archiving is
+disruptive to a naive verify walk), which then resolves 1a (one mechanism, not two).
+Considered and explicitly rejected reusing 3a's full per-field commitment structure
+for whole-record archival — reasoned that per-field granularity exists specifically
+for *selective* disclosure, which full-record archival doesn't need, since nothing is
+being selectively proven when an entire record's content is discarded at once.
+Proposed a simpler mechanism instead: null the detail fields, keep
+`sequence_number`/`contentHash`/`prevHash` permanently untouched. This directly
+determines 2a (nulled fields would break verify's content-recompute) and 2b (verify
+needs one new branch: skip content-recompute when `archived=true`, trusting the
+permanently-stored `contentHash`, still protected indirectly via 6d's `recordHash`
+cascade). 2c falls out for free (row never removed, so gap detection is unaffected).
+Proposed a `RECORD_ARCHIVED` chain event mirroring 3b's `FIELD_REDACTED` pattern for
+consistency. For 1b/1c/1e, applied the same scope discipline as Scenario A (single
+global config constant, an admin-triggered endpoint rather than an in-process
+scheduler, default-excluded query visibility) and flagged an explicit, honest
+limitation: archived records' full original content is not retrievable through this
+service once archived — a cold-storage retrieval tier was named as a reasonable
+extension but scoped out given time constraints, not silently omitted. Closed
+Scenario A's 2a forward-looking note by giving redaction and retention a shared,
+narrowly-scoped DB role with column-level `UPDATE` grants, explicitly excluding the
+three permanent chain-integrity columns from ever being updatable by anything.
+
+**Decision:** **FINAL.** User confirmed to lock in all of Group 3, no pushback.
+
+**Rationale:** See `docs/REQUIREMENTS.md`, Scenario B, items "1d," "1a," "Mechanism,"
+"2a," "2b," "2c," "1b," "1c," "1e," and "DB privilege." Closes Group 3 entirely. Next:
+Group 4 — bulk export (5a, 5b, 5c, 5d, 5e).
+
+---
+
+## 2026-08-22 — Decision: bulk export (Group 4) — signature over rechaining, user-proposed alternative analyzed and rejected
+
+**Intent:** Resolve Group 4 in full — what "verifiable" means for the export bundle
+given 7a's non-contiguous-export trade-off (5a), whether to include a chain-tail
+anchor (5b), bundle format and integrity mechanism (5c), and how redacted/archived
+records are represented in exports (5d/5e).
+
+**AI produced (round 1):** Proposed per-record self-consistency (recompute each
+record's `contentHash`) plus a bundle-level Ed25519 signature — identified that
+self-consistency alone is weak, since an attacker able to edit the bundle file can
+edit a record's content and its accompanying hash together, consistently, with
+nothing to catch it. The signature is what actually delivers "not altered since
+export."
+
+**User question:** Asked specifically about an alternative — constructing a *new*,
+export-scoped hash chain over just the filtered records (re-linking them into their
+own contiguous sequence), signed the same way, and whether that would improve
+verifiability or introduce new attack risk.
+
+**AI analysis:** Worked through why rechaining adds no real security once the bundle
+is already signed: content-tampering detection is identical either way (content
+hashes unchanged); the only new claim rechaining adds is "no gaps among the *included*
+records," but the sole entity capable of omitting a record from the export is the
+exporting service itself at export time — the same entity that signs the bundle — so
+a dishonest/compromised signer can produce a perfectly self-consistent rechained
+bundle missing a record just as easily as a flat one. Post-export file tampering is
+already fully caught by the signature invalidating on any edit, so a second chain
+construct duplicates that protection rather than adding to it. Identified a *different*
+kind of risk the user's proposal would introduce — not cryptographic, but
+trust-calibration: a rechained bundle a recipient can "verify" with a familiar
+chain-walk is easy to over-read as proving completeness/authoritativeness, when the
+actual guarantee is narrower (self-consistent + signed by the service). Named the
+direction a genuinely stronger design would take (anchor the export's genesis to the
+real chain's actual neighboring record, an inclusion-proof-style scheme) and why it's
+deliberately out of scope (meaningfully more implementation surface, nothing in the
+requirement asking for that strength).
+
+**Decision:** **FINAL.** User's proposed alternative was seriously evaluated, not
+dismissed — the analysis is recorded in full in `docs/REQUIREMENTS.md` under 5a rather
+than only the conclusion, since it's a legitimate design question worth being able to
+re-derive later. Landed on flat per-record hashes + Ed25519 bundle signature +
+sequence-sorted record order (cheap, already covered by the signature) + an explicit,
+documented statement that "verified" means self-consistent-and-signed, not
+proven-complete. 5b (chain-tail snapshot, included as defense-in-depth), 5c (bundle
+format/signing scheme), 5d, and 5e locked in alongside it, no further pushback.
+
+**Rationale:** See `docs/REQUIREMENTS.md`, Scenario B, items "5a" (includes the full
+rechaining analysis), "5b," "5c," "5d," "5e." **This completes Scenario B's full
+ambiguity list** — all four groups, every item, Decided. Next: Scenario C.
