@@ -681,3 +681,49 @@ this step, consistent with "proceed."
 **Rationale:** See `docs/TASKS.md` in full. `docs/REQUIREMENTS.md`'s Scenario C
 "Next steps" updated to point here instead of restating the now-completed design
 step.
+
+---
+
+## 2026-08-22 — Implementation begins: A1 (data layer)
+
+**Intent:** Start actual implementation, following `docs/TASKS.md`'s suggested build
+order. First unit: A1 — the `audit_events` model, its migration, and the DB
+roles/grants migration.
+
+**AI produced:** `AuditEvent` SQLAlchemy model (`sequence_number` used directly as
+primary key rather than a separate surrogate id, since it's already the app-computed
+unique chain-order key from 7c — simplification over the original task wording's
+implied separate `UNIQUE` constraint). Alembic migration with query-filter indexes.
+A second migration provisioning `app_role`/`maintenance_role`.
+
+**Refinement made during implementation, flagged rather than silently applied:**
+while implementing the roles migration, found that `maintenance_role` needed
+`INSERT` in addition to its column-scoped `UPDATE` — TASKS.md's B1.2/B2.2 call for
+redaction/retention to append their own system event "in the same transaction" as
+the column update, which isn't possible across two different roles/connections.
+Granted `maintenance_role` both. Also found the least-privilege design as originally
+decided had no enforcement mechanism — every connection, including the running
+app's, used the Postgres superuser-equivalent account (`audit`), since
+`Settings.database_url` was a single value. Split it into three:
+`database_url` (`app_role`, what the app actually runs on),
+`maintenance_database_url` (`maintenance_role`), and `admin_database_url`
+(superuser, Alembic only, never imported by application runtime code).
+
+**Verification, not just implementation:** ran a fresh `docker compose up` from an
+empty volume to confirm migrations execute automatically before the app starts
+(added a `command` override: `alembic upgrade head && uvicorn ...`); queried
+`information_schema.column_privileges` to confirm the granted columns exactly match
+the design (`maintenance_role` has `UPDATE` on the ten intended columns and *not* on
+`sequence_number`/`content_hash`/`prev_hash`); ran a negative test connecting
+directly as both `app_role` and `maintenance_role` via `psql` and confirmed both get
+`permission denied` attempting to `UPDATE content_hash` — the least-privilege design
+is actually enforced, not just documented. Full quality gates (ruff, mypy, pytest)
+pass.
+
+**Decision:** Proceeding task-by-task per `docs/TASKS.md`'s build order; checking in
+at natural checkpoints (task groups) rather than per-file, consistent with the
+pacing established during the design phase.
+
+**Rationale:** See `docs/TASKS.md`, task entries A1.1–A1.3 (marked complete, each
+with a pointer to the file(s) it produced and notes on refinements made during
+implementation).

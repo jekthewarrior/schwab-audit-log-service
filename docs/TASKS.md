@@ -18,27 +18,47 @@ thing twice.
 
 ### A1. Data layer
 
-- [ ] **A1.1 — `audit_events` SQLAlchemy model.** Columns: `sequence_number`
-  (`BIGINT`, app-computed, `UNIQUE`), `event_type`, `actor_id`, `resource_type`,
-  `resource_id`, `payload` (`JSONB`), `payload_field_commitments` (`JSONB`:
-  `{fieldName: {hash, salt}}`), `timestamp` (caller-supplied), `recorded_at`
-  (server-assigned), `content_hash` (`CHAR(64)`), `prev_hash` (`CHAR(64)`),
-  `archived` (`BOOLEAN`, default `false`), `archived_at` (nullable). Built with
-  Scenario B's redaction (per-field commitments) and archival (flag columns) needs
-  included from the start — avoids a schema-migration redo later.
+- [x] **A1.1 — `audit_events` SQLAlchemy model.** Columns: `sequence_number`
+  (`BIGINT`, app-computed, primary key — used directly as the uniqueness constraint
+  rather than a separate surrogate id + `UNIQUE`, simpler and avoids a redundant
+  index), `event_type`, `actor_id`, `resource_type`, `resource_id`, `payload`
+  (`JSONB`), `payload_field_commitments` (`JSONB`: `{fieldName: {hash, salt}}`),
+  `timestamp` (caller-supplied), `recorded_at` (server-assigned), `content_hash`
+  (`CHAR(64)`, `NOT NULL` always), `prev_hash` (`CHAR(64)`, `NOT NULL` always),
+  `archived` (`BOOLEAN`, default `false`), `archived_at` (nullable). All other
+  columns nullable at the DB level (retention nulls them on archival per Scenario B
+  2b) — "required at write time" is enforced by the write-path schema (A2.4), not
+  the column definition. Built with Scenario B's redaction (per-field commitments)
+  and archival (flag columns) needs included from the start.
   *Implements: 1a–1d, 3a/3b (Scenario A); 3a (Scenario B, payload commitment
   structure); 1d (Scenario B, archival columns).*
-- [ ] **A1.2 — Alembic migration.** Creates the table above, indexes on `actor_id`,
+  → `src/audit_log_service/models/audit_event.py`
+- [x] **A1.2 — Alembic migration.** Creates the table above, indexes on `actor_id`,
   (`resource_type`, `resource_id`), `event_type`, `timestamp` (query filter
-  support), and the `UNIQUE` constraint on `sequence_number`.
+  support).
   *Implements: 7c, 4a–4c.* Depends on: A1.1.
-- [ ] **A1.3 — DB roles/grants migration.** `app_role`: `SELECT`, `INSERT` only, no
-  `UPDATE`/`DELETE`/DDL. `maintenance_role`: column-level `UPDATE` on
+  → `alembic/versions/710d78dcb974_create_audit_events_table.py`
+- [x] **A1.3 — DB roles/grants migration.** `app_role`: `SELECT`, `INSERT` only, no
+  `UPDATE`/`DELETE`/DDL. `maintenance_role`: `SELECT`, `INSERT` (refinement made
+  during implementation, not in the original task description — needed so
+  redaction/retention can append their own `FIELD_REDACTED`/`RECORD_ARCHIVED`
+  system events in the *same transaction* as the column update, for atomicity,
+  without switching roles mid-transaction), and column-level `UPDATE` on
   `payload`, `payload_field_commitments`, `event_type`, `actor_id`,
   `resource_type`, `resource_id`, `timestamp`, `recorded_at`, `archived`,
   `archived_at` — **never** on `sequence_number`, `content_hash`, `prev_hash`.
+  Also required splitting `Settings.database_url` into three connection strings
+  (`database_url` for `app_role`, `maintenance_database_url` for
+  `maintenance_role`, `admin_database_url` for migrations only) — the original
+  design didn't specify this, but it's what makes the least-privilege grants real
+  rather than documented-but-unenforced (previously *all* connections, including
+  the running app, used the Postgres superuser-equivalent account).
   *Implements: 2a (Scenario A); DB privilege (Scenario B, Group 3).* Depends on:
   A1.1.
+  → `alembic/versions/adde66daf218_create_app_role_and_maintenance_role.py`,
+  `src/audit_log_service/core/config.py`. Verified with a negative test: both
+  `app_role` and `maintenance_role` get `permission denied` attempting to `UPDATE
+  content_hash` directly via `psql`.
 
 ### A2. Write path
 

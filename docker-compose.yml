@@ -18,12 +18,18 @@ services:
   app:
     build: .
     environment:
-      DATABASE_URL: postgresql+asyncpg://audit:audit@db:5432/audit_log
+      # app_role: SELECT, INSERT only — this is the connection the running service
+      # actually uses (per REQUIREMENTS.md 2a). Roles/passwords are provisioned by
+      # the Alembic migration run below, using ADMIN_DATABASE_URL.
+      DATABASE_URL: postgresql+asyncpg://app_role:app_role_dev_pw@db:5432/audit_log
+      MAINTENANCE_DATABASE_URL: postgresql+asyncpg://maintenance_role:maintenance_role_dev_pw@db:5432/audit_log
+      ADMIN_DATABASE_URL: postgresql+asyncpg://audit:audit@db:5432/audit_log
     ports:
       - "8000:8000"
     depends_on:
       db:
         condition: service_healthy
+    command: sh -c "uv run alembic upgrade head && uv run uvicorn audit_log_service.main:app --host 0.0.0.0 --port 8000"
 
 volumes:
   pgdata:
