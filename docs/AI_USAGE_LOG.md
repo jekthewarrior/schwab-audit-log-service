@@ -1098,3 +1098,40 @@ bundle's signature via `cryptography` directly, same pattern as `test_export.py`
 scenarios — implementation, documentation, and automated validation.
 
 **Rationale:** See `docs/TASKS.md`, task entries C1, C2.
+
+---
+
+## 2026-08-23 — Remaining assignment deliverables: ATTESTATION.md, ARCHITECTURE.md, TESTING.md, ENGINEERING_SUMMARY.md
+
+**Intent:** Close the gap between what's built and the assignment's full §7
+deliverable list. Took stock in the previous turn: prototype, three scenarios, and
+AI usage log were done; attestation, architecture overview, testing/limitations
+write-up, and final engineering summary were not.
+
+**AI produced:** `ATTESTATION.md` at the repo root, deliberately left as a template
+(name and dates as placeholders) rather than filled in — per the user's explicit
+instruction to fill it out themselves; email pre-filled since it's already known
+and unambiguous (attribution use, not a judgment call). `docs/ARCHITECTURE.md`
+(components with a Mermaid diagram, data model table, API surface table, hash chain
+design explained as three layers with why each is necessary, concurrency model,
+security model, known architectural limitations) — synthesized from and linking
+into `REQUIREMENTS.md` rather than duplicating its rationale. `docs/TESTING.md`
+(approach, the two bugs testing itself found, coverage table by area, explicit
+"what isn't automated and why" section). `docs/ENGINEERING_SUMMARY.md` (process
+narrative, artifact inventory, three concrete risks-found-and-fixed examples,
+consolidated trade-offs/assumptions/limitations, each cross-referenced rather than
+restated in full). Updated `README.md` with a documentation index table.
+
+**Verification, not just writing:** double-checked the API surface table and DB
+role table in `ARCHITECTURE.md` against the actual router source
+(`grep` for `@router.get/post` and `SessionDep`/`MaintenanceSessionDep` usage)
+rather than writing from memory of what was built. Caught and fixed a real Mermaid
+syntax error in the architecture diagram — dotted-edge labels need spaces
+(`-. text .->`, not `-.text.->`) — before it could render broken in an actual
+review. Corrected a vague "12+ commits" figure to the precise count from `git log`.
+
+**Decision:** Ready for the user's stated next step — a thorough review of the
+documents and test cases, after which further tests or updates may follow.
+
+**Rationale:** See `ATTESTATION.md`, `docs/ARCHITECTURE.md`, `docs/TESTING.md`,
+`docs/ENGINEERING_SUMMARY.md`, and the updated `README.md` documentation index.

@@ -8,10 +8,17 @@ Tamper-evident audit log service (Schwab AI-assisted engineering assignment).
 - `uv` for dependency/env management
 - pytest, ruff, mypy, bandit, pip-audit for quality gates
 
-Design decisions (hash algorithm, chain structure, pagination strategy, etc.), with
-rationale and rejected alternatives, are in [`docs/REQUIREMENTS.md`](docs/REQUIREMENTS.md).
-The resulting implementation task breakdown is in [`docs/TASKS.md`](docs/TASKS.md).
-AI usage/traceability notes are in [`docs/AI_USAGE_LOG.md`](docs/AI_USAGE_LOG.md).
+## Documentation
+
+| Doc | Contents |
+|---|---|
+| [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | Components, data model, API surface, hash chain design, security model |
+| [`docs/REQUIREMENTS.md`](docs/REQUIREMENTS.md) | Raw requirements, ambiguities, decisions, rationale, rejected alternatives |
+| [`docs/TASKS.md`](docs/TASKS.md) | Implementation task breakdown, dependency-ordered, with live-verification notes |
+| [`docs/TESTING.md`](docs/TESTING.md) | Testing approach, coverage, and what isn't automated |
+| [`docs/ENGINEERING_SUMMARY.md`](docs/ENGINEERING_SUMMARY.md) | Plan, artifacts, risks found and fixed, trade-offs, assumptions, limitations |
+| [`docs/AI_USAGE_LOG.md`](docs/AI_USAGE_LOG.md) | AI usage / traceability log |
+| [`ATTESTATION.md`](ATTESTATION.md) | Submission attestation |
 
 ## Local setup
 
