@@ -1,18 +1,18 @@
 # Attestation
 
-**Full Name:** [Your Full Name]
+**Full Name:** Pranav Kesani
 
 **Email:** pskesani@gmail.com
 
 **Assignment:** Interview Assignment: Build an AI-Assisted Software Engineering
 System — Audit Log Service (Charles Schwab & Co., Inc.)
 
-**Date Started:** [Date you started]
+**Date Started:** 08/21/2026
 
-**Date Submitted:** [Date you submit]
+**Date Submitted:** 08/25/2026
 
 ---
 
-I, [your full name], attest that this submission is my own individual work,
+I, Pranav Kesani, attest that this submission is my own individual work,
 completed on my own machine and accounts, and that it honestly reflects my
 development process and use of AI.
