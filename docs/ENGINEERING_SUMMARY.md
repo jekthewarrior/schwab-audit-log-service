@@ -54,12 +54,6 @@ made during Scenario B's analysis, before any hashing code existed.
 Three concrete examples where a real problem was found during this process (not
 merely theorized about) and fixed before it shipped:
 
-- **A cascading-invalidation gap in the hash design.** An early proposal (`content_hash`
-  and `prev_hash` as fully independent fields) would have let an attacker forge two
-  adjacent records while leaving the rest of the chain valid — violating the
-  requirement's own literal guarantee. Found during design review, before any
-  hashing code existed. Fixed with a derived `recordHash` that folds `prev_hash`
-  into what propagates forward. (`REQUIREMENTS.md`, item 6d)
 - **A concurrency bug in the retention sweep.** Two concurrent sweep calls could
   read the same candidate set before either archived it, producing duplicate audit
   events over the same records. Found while implementing, before it was ever run

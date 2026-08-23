@@ -1135,3 +1135,36 @@ documents and test cases, after which further tests or updates may follow.
 
 **Rationale:** See `ATTESTATION.md`, `docs/ARCHITECTURE.md`, `docs/TESTING.md`,
 `docs/ENGINEERING_SUMMARY.md`, and the updated `README.md` documentation index.
+
+---
+
+## 2026-08-23 — User review: apparent contradiction in ARCHITECTURE.md's concurrency section
+
+**Intent:** User, reviewing the newly-committed docs, questioned a sentence in
+`ARCHITECTURE.md`'s Concurrency section — "a gap in the sequence can only mean
+tampering, never a benign retry" — as seemingly outdated, in apparent tension with
+the earlier decision (`REQUIREMENTS.md` 8a) that a dedicated `SEQUENCE_GAP` check
+was considered and rejected as adding no detection coverage beyond `LINK_MISMATCH`.
+
+**AI analysis:** Distinguished two different claims that had been conflated: 8a is
+about **check design** (verify doesn't need a *separate* gap-scanning mechanism,
+since interior gaps already surface via `LINK_MISMATCH`); the concurrency sentence
+is about **causality** (given 7c's design — app-computed `sequence_number`, no DB
+`SERIAL`, advisory-lock serialization instead of retry-on-conflict — a gap can only
+be caused by deletion, never a benign retry artifact). Argued these aren't
+contradictory but complementary: the causal guarantee is what *justifies* 8a's
+simplification — `LINK_MISMATCH`'s gap-naming message is only safely reportable
+without a hedge ("...or possibly a retry") because 7c already rules that
+alternative out. Concluded the sentence wasn't substantively wrong, but was a real
+documentation problem: sitting alone with no cross-reference to 8a, it reads as if
+it might be asserting gap-checking as a mechanism, which is exactly what would
+contradict 8a.
+
+**Decision:** **FINAL.** Revised the sentence to state the guarantee explicitly as
+a prerequisite for 8a's design rather than a freestanding claim, with an explicit
+cross-reference. User confirmed this resolved the concern.
+
+**Rationale:** See `docs/ARCHITECTURE.md`, "Concurrency" section. No change to
+`REQUIREMENTS.md` 7c or 8a themselves — both already correctly reflected this
+relationship; only `ARCHITECTURE.md`'s synthesis needed the connection made
+explicit.

@@ -10,7 +10,7 @@ duplicating it, so the two can't drift out of sync.
 A tamper-evident audit log service: an append-only history of events, chained by
 hash so that any modification to a past record — whether through the API or a
 direct datastore mutation — is detectable. Built across three scenarios: the core
-log (write, query, verify), retention and redaction extensions, and a compliance-
+log (write, query, verify); retention, redaction, and bulk export extensions; and a compliance-
 reporting use case satisfied by reusing the same infrastructure rather than adding
 new surface area.
 
@@ -151,8 +151,13 @@ critical section: read tail → compute `sequence_number`/`prev_hash` → insert
 over `SELECT ... FOR UPDATE` on the tail row specifically because it also covers the
 empty-table genesis case, which a row lock can't. `sequence_number` is
 application-computed, not a DB `SERIAL`, so an aborted transaction never burns a
-value — a gap in the sequence can only mean tampering, never a benign retry.
-([7c](REQUIREMENTS.md))
+value. This is a prerequisite for [8a](REQUIREMENTS.md)'s verify design, not an
+independent detection mechanism: it guarantees that if a gap ever appears in the
+sequence, it can only be explained by a previously-committed record being deleted —
+never a benign retry artifact — which is what lets `LINK_MISMATCH`'s gap-naming
+report a missing `sequence_number` as trustworthy evidence without a separate,
+redundant gap-scanning check (deliberately not built — see
+[8a](REQUIREMENTS.md) for why one was considered and rejected). ([7c](REQUIREMENTS.md))
 
 ## Security model
 
