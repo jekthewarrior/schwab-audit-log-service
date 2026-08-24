@@ -1168,3 +1168,50 @@ cross-reference. User confirmed this resolved the concern.
 `REQUIREMENTS.md` 7c or 8a themselves — both already correctly reflected this
 relationship; only `ARCHITECTURE.md`'s synthesis needed the connection made
 explicit.
+
+---
+
+## 2026-08-23 — Production-readiness extensions: HTTP-layer tests, write-throughput load test
+
+**Intent:** User, after reviewing the docs, asked for production-readiness
+improvements beyond the three-scenario scope. Proposed a menu (performance/load
+testing, CI pipeline, structured logging, secrets externalization, HTTP-layer
+tests, consistent error handling); user chose HTTP-layer tests followed by a
+write-throughput load test, explicitly sidelining the rest for now.
+
+**AI produced:** A `client` fixture in `tests/conftest.py` using FastAPI's
+`app.dependency_overrides` to redirect `get_session`/`get_maintenance_session` at
+the test container, rather than environment-variable manipulation of the app's
+module-level engine singletons (same reasoning already applied to the migration
+subprocess). `tests/test_http.py` — 11 tests covering each endpoint's HTTP-specific
+behavior (status codes, response shape) plus one full req 9 acceptance flow through
+the real HTTP surface end to end, proving the routing/validation/DI/serialization
+wiring is correct as a whole. `tests/test_load.py` — 100 concurrent writes through
+the real HTTP layer, asserting correctness (gapless chain, all succeed) rather than
+a hard throughput threshold (hardware varies too much across machines/CI for a
+fixed number to be a meaningful, non-flaky gate), reporting throughput as
+informational output instead.
+
+**Result, not simulated:** measured ~55 writes/sec sustained under 100 concurrent
+requests in this environment — turns 7c's "fully serialized appends" from a
+qualitative, accepted trade-off into an actual number. All 11 HTTP tests passed on
+the first run against real Postgres, unlike the earlier service-layer suite (no new
+bugs found this time) — consistent with the HTTP wiring having already been
+extensively live-verified via `curl` during each feature's original development;
+this pass captured that verification as repeatable automated coverage rather than
+finding new defects.
+
+**Documentation kept in sync, not left stale:** added a new "Production-readiness
+extensions" section to `TASKS.md` (explicitly distinguished from the original
+three-scenario task list, since this work wasn't driven by a numbered requirement),
+updated `TESTING.md`'s coverage table and "what isn't automated" section (HTTP
+layer and write throughput moved from gaps to covered; verify-walk-at-scale named
+as the next specific load-testing target), and updated `ARCHITECTURE.md`'s
+"fully serialized appends" limitation with the measured figure.
+
+**Decision:** Per the user's prior instruction, no commit made — user is committing
+their own review changes from this point forward.
+
+**Rationale:** See `docs/TASKS.md`, "Production-readiness extensions" (P1, P2);
+`docs/TESTING.md` coverage table and gaps section; `docs/ARCHITECTURE.md`,
+"Known architectural limitations."

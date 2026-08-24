@@ -64,32 +64,29 @@ test suite.
 | Export | `test_export.py` | Independent third-party signature verification (via `cryptography` directly, not the app's own code), tamper detection on content+hash edited together, required-filter validation |
 | Compliance scenario | `test_compliance.py` | `eventType` + time-range filter *combination* correctly isolates the intended subset (not just each filter individually), signature verification |
 | DB privileges | `test_privileges.py` | `app_role` denied all mutation, `maintenance_role` denied on protected columns specifically, `maintenance_role` *can* update permitted columns (a positive control — without it, the negative tests could pass vacuously) |
-| HTTP wiring | `test_health.py` | Liveness endpoint |
+| HTTP layer | `test_http.py`, `test_health.py` | Routing, request validation, dependency injection, response serialization per endpoint; one full req 9 acceptance flow through the real HTTP surface end to end, proving the pieces are wired together correctly as a whole, not just individually correct |
+| Write throughput | `test_load.py` | 100 concurrent writes through the real HTTP layer — measured ~55 writes/sec in this environment under the fully-serialized-append design (7c); asserts correctness (gapless chain, all succeed) rather than a hard threshold, since hardware varies too much across machines for a fixed number to be a meaningful gate |
 
 ## What isn't automated, and why
 
-- **Full HTTP-layer integration tests.** All DB-backed tests call service functions
-  directly (`append_event`, `verify_chain`, etc.) against a real database, rather
-  than going through FastAPI's HTTP layer with `httpx`. This was a scope trade-off:
-  the HTTP layer (routing, request validation, dependency injection, response
-  serialization) was extensively verified live via `curl` during each feature's
-  development — documented per-task in `TASKS.md` — but that verification isn't
-  captured as repeatable automated tests. A full HTTP-level suite would need
-  `app.dependency_overrides` wired to the test container, which wasn't built in
-  this pass.
 - **Numeric JSONB round-trip edge case.** Flagged as a specific test to write back
   in [6c](REQUIREMENTS.md) (e.g. `100` vs `100.0` surviving storage without a false
   content-hash mismatch) — not yet added as its own test, though every integration
   test that writes and later verifies a record implicitly exercises the common
   case.
-- **Load/scale testing.** Nothing exercises the system beyond the concurrency
-  test's 20 writers or a handful of records per test. The fully-serialized-append
-  design (7c) and O(n) verify walk (7e) are documented, accepted trade-offs for
-  this prototype's scope, not validated against realistic production volume.
+- **Verify-walk latency at scale.** The write-throughput load test (`test_load.py`)
+  measures 7c's serialized-append design under concurrency, but nothing measures
+  7e's O(n) verify walk against a realistically large chain (10k/100k+ records) —
+  only ever exercised against a handful of records per test. Named explicitly as
+  the next load-testing target, not silently left out.
 - **The DB-level defense-in-depth test only checks two representative columns**
   (`content_hash`, `sequence_number`) for `maintenance_role`'s denial, not every
   protected column individually — sufficient to prove the mechanism works, not
   exhaustive per-column coverage.
+- **CI enforcement, structured logging/observability, secrets externalization, and
+  a consistent global error-handling schema** were all considered alongside the
+  load test as production-readiness extensions and explicitly sidelined for now —
+  see `TASKS.md`'s "Production-readiness extensions" section.
 
 See [`ARCHITECTURE.md`](ARCHITECTURE.md) for the design-level limitations these
 tests validate against (no external chain anchoring, fully serialized appends, the

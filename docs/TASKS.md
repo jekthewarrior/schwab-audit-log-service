@@ -467,6 +467,53 @@ the verifiable JSON bundle itself.
 
 ---
 
+## Production-readiness extensions
+
+Not part of the original three-scenario scope — added afterward, directed by the
+user, to close gaps `TESTING.md`/`ARCHITECTURE.md` had already named as accepted
+limitations rather than to satisfy a numbered requirement. Prioritized from a
+longer menu (CI pipeline, structured logging, secrets externalization, consistent
+error handling were sidelined for now).
+
+- [x] **P1 — HTTP-layer integration tests.** Every other DB-backed test calls
+  service functions directly; nothing exercised FastAPI's actual routing, request
+  validation, dependency injection, or response serialization. Built via
+  `app.dependency_overrides` pointing `get_session`/`get_maintenance_session` at
+  the test container, rather than environment-variable manipulation (the app's
+  `core/db.py` engines are module-level singletons bound at import time — see
+  `conftest.py`'s existing note on why the Alembic migration step already avoids
+  touching them).
+  → New `client` fixture in `tests/conftest.py`; `tests/test_http.py` — one test
+  per endpoint's HTTP-specific behavior (status codes, response shape), plus one
+  full req 9 acceptance flow through the real HTTP surface end to end (write →
+  query → verify → direct-datastore tamper via the admin connection → verify
+  catches it) — the one test proving the pieces are wired together correctly as a
+  whole, not just individually correct. 11 tests, all passed on the first run
+  against real Postgres (the underlying HTTP wiring had already been extensively
+  live-verified via `curl` during each feature's development).
+- [x] **P2 — Write-throughput load test.** Turns 7c's "fully serialized appends"
+  from a qualitative, accepted trade-off into a measured number — closes the
+  "Load/scale testing" gap named in `TESTING.md`.
+  → `tests/test_load.py`. 100 concurrent writes via the real HTTP layer (building
+  on P1's `client` fixture); asserts correctness (every write succeeds, the
+  resulting chain is gapless and verifies intact) rather than a hard throughput
+  threshold — hardware varies too much across machines/CI for a fixed number to be
+  a meaningful pass/fail gate without becoming flaky. Reports throughput as
+  informational output instead. **Measured: ~55 writes/sec** in this environment
+  (see `docs/TESTING.md` for the number and what it does/doesn't measure — ASGI
+  in-process transport, so this is application+DB serialization overhead, not
+  wire-level HTTP cost).
+
+**Explicitly sidelined, not forgotten:** CI pipeline (`ruff`/`mypy`/`bandit`/
+`pip-audit`/`pytest` enforced on every push, currently only run manually),
+structured logging/observability, secrets externalization (dev-fixed passwords/
+signing key have no "production mode" guard preventing accidental reuse),
+consistent global error-handling schema, and verify-walk-latency-at-scale testing
+(only write throughput was measured, not the O(n) verify walk's behavior at
+realistic chain lengths).
+
+---
+
 ## Suggested build order
 
 1. **A1 → A2 → A3 → A4 → A5** (Scenario A end-to-end, including its own tests,

@@ -190,7 +190,11 @@ significant ones:
   this gap needs periodic external checkpointing, out of scope here. ([6d/8a](REQUIREMENTS.md))
 - **Fully serialized appends.** One global chain means one write at a time,
   system-wide — an accepted consequence of the single-chain decision, not
-  something layered on top for this prototype. ([7a](REQUIREMENTS.md))
+  something layered on top for this prototype. ([7a](REQUIREMENTS.md)) Measured,
+  not just asserted qualitatively: ~55 writes/sec sustained under 100 concurrent
+  HTTP requests in this environment (`tests/test_load.py`) — the verify walk's
+  O(n) behavior at realistic chain lengths remains unmeasured (see
+  [`TESTING.md`](TESTING.md)).
 - **Archived records become unreachable via export filters** once their
   classification fields are nulled — a cross-feature interaction discovered during
   implementation, documented rather than fixed. ([Scenario B, 5e](REQUIREMENTS.md))

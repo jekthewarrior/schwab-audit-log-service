@@ -9,8 +9,10 @@ Requires actual Docker daemon access. In this environment that means running pyt
 wrapped in `sg docker -c "..."`, not directly — see AI_USAGE_LOG.md.
 
 Session-scoped fixtures here are lazy: a test module that never requests db_engines
-(e.g. test_hashing.py, test_health.py) never triggers the container to start, so
-those stay fast.
+(e.g. test_hashing.py) never triggers the container to start, so those stay fast —
+importing `audit_log_service.main` (needed for the `client` fixture below) happens
+regardless at collection time, but that's cheap module loading, not a network call;
+`create_async_engine` never connects until actually used.
 """
 
 import os
@@ -22,6 +24,7 @@ from pathlib import Path
 
 import pytest
 import pytest_asyncio
+from httpx import ASGITransport, AsyncClient
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
@@ -30,6 +33,9 @@ from sqlalchemy.ext.asyncio import (
     create_async_engine,
 )
 from testcontainers.community.postgres import PostgresContainer
+
+from audit_log_service.core.db import get_maintenance_session, get_session
+from audit_log_service.main import app
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
@@ -131,3 +137,34 @@ async def admin_session(db_engines: DbEngines, clean_db: None) -> AsyncGenerator
     session_local = async_sessionmaker(db_engines.admin, expire_on_commit=False)
     async with session_local() as session:
         yield session
+
+
+@pytest_asyncio.fixture
+async def client(db_engines: DbEngines, clean_db: None) -> AsyncGenerator[AsyncClient]:
+    """Exercises the real HTTP layer — routing, request validation, dependency
+    injection, response serialization — via FastAPI's `dependency_overrides`
+    mechanism, rather than calling service functions directly (as the rest of this
+    suite does). Overrides `get_session`/`get_maintenance_session` to point at the
+    test container instead of the app's local-dev-default engines from `core/db.py`
+    (those still get constructed on import, but `create_async_engine` is lazy — it
+    never actually connects, since nothing here uses them).
+    """
+    app_session_local = async_sessionmaker(db_engines.app, expire_on_commit=False)
+    maintenance_session_local = async_sessionmaker(db_engines.maintenance, expire_on_commit=False)
+
+    async def override_get_session() -> AsyncGenerator[AsyncSession]:
+        async with app_session_local() as session:
+            yield session
+
+    async def override_get_maintenance_session() -> AsyncGenerator[AsyncSession]:
+        async with maintenance_session_local() as session:
+            yield session
+
+    app.dependency_overrides[get_session] = override_get_session
+    app.dependency_overrides[get_maintenance_session] = override_get_maintenance_session
+    try:
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as async_client:
+            yield async_client
+    finally:
+        app.dependency_overrides.clear()
