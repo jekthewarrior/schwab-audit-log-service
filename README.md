@@ -53,6 +53,87 @@ Alembic, never by application runtime code. Dev-only default passwords live in
 [`src/audit_log_service/core/config.py`](src/audit_log_service/core/config.py); see
 that file's docstring for the production caveat.
 
+## Using the API
+
+All endpoints are under `/audit`; examples assume the service is running at
+`http://localhost:8000` (either option above). Full design rationale for each is in
+[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)'s API surface table and
+[`docs/REQUIREMENTS.md`](docs/REQUIREMENTS.md).
+
+**Write an event** — `POST /audit/events`
+
+```bash
+curl -X POST http://localhost:8000/audit/events \
+  -H "Content-Type: application/json" \
+  -d '{
+    "eventType": "USER_LOGIN",
+    "actorId": "user-1",
+    "resourceType": "SESSION",
+    "resourceId": "sess-1",
+    "payload": {"ip": "127.0.0.1"},
+    "timestamp": "2026-01-01T12:00:00Z"
+  }'
+```
+
+Returns the stored record, including its `sequenceNumber`, `contentHash`, and
+`prevHash` (64 zeros for the very first record — the genesis sentinel). All six
+fields are required; `eventType` must match `^[A-Z][A-Z0-9_]*$` (free-form, not a
+fixed enum — see 1a). No update or delete endpoint exists anywhere in this API.
+
+**Query events** — `GET /audit/events`
+
+```bash
+curl "http://localhost:8000/audit/events?actorId=user-1&eventType=USER_LOGIN&limit=10"
+```
+
+Filters (`actorId`, `resourceType`, `resourceId`, `eventType`, `from`, `to`) combine
+with AND; `resourceType`/`resourceId` are independently valid without each other.
+`from`/`to` filter the caller-supplied `timestamp`. Results are cursor-paginated,
+newest first — pass the response's `nextCursor` as `?cursor=<value>` for the next
+page. Archived records are excluded by default; add `includeArchived=true` to
+include them (though most of their filterable fields will already be `null` — see
+[`docs/REQUIREMENTS.md`](docs/REQUIREMENTS.md) Scenario B item 1e).
+
+**Verify the chain** — `GET /audit/verify`
+
+```bash
+curl http://localhost:8000/audit/verify
+```
+
+`{"intact": true, ...}`, or on the first inconsistency found:
+`{"intact": false, "sequenceNumber": N, "violationType": "CONTENT_MISMATCH" | "LINK_MISMATCH" | "GENESIS_MISMATCH", "detail": "..."}`.
+
+**Redact a field** — `POST /audit/events/{sequenceNumber}/redact`
+
+```bash
+curl -X POST http://localhost:8000/audit/events/1/redact \
+  -H "Content-Type: application/json" \
+  -d '{"field": "accountNumber", "actorId": "compliance-officer-1"}'
+```
+
+Overwrites one top-level `payload` field with a redaction marker; `contentHash` is
+unchanged, so the chain still verifies afterward. `404` if the record or field
+doesn't exist, `409` if the field is already redacted or the record has been
+archived (nothing left to redact).
+
+**Archive old records** — `POST /audit/retention/sweep`
+
+```bash
+curl -X POST http://localhost:8000/audit/retention/sweep \
+  -H "Content-Type: application/json" \
+  -d '{"actorId": "cron-scheduler"}'
+```
+
+Archives records older than `RETENTION_WINDOW_DAYS` (default 365, based on
+server-assigned `recordedAt`, not the caller-supplied `timestamp`). Returns the
+`sequenceNumber`s archived by this call (empty if nothing was eligible — safe to
+call repeatedly, e.g. from a cron job).
+
+**Export a signed bundle** — `GET /audit/export`, and **fetch the verification
+public key** — `GET /audit/export/public-key`. See
+[Compliance reporting](#compliance-reporting-scenario-c) below for the full
+walkthrough, including how a recipient verifies the bundle offline.
+
 ## Tests
 
 ```bash

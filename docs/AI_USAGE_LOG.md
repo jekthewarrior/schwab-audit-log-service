@@ -1215,3 +1215,31 @@ their own review changes from this point forward.
 **Rationale:** See `docs/TASKS.md`, "Production-readiness extensions" (P1, P2);
 `docs/TESTING.md` coverage table and gaps section; `docs/ARCHITECTURE.md`,
 "Known architectural limitations."
+
+---
+
+## 2026-08-25 — README: "Using the API" section
+
+**Intent:** User asked for instructions on querying the API endpoints in
+`README.md` — a general usage walkthrough had never been written; only the
+Scenario C compliance-reporting section had a worked example (for `/audit/export`
+specifically).
+
+**AI produced:** A new "Using the API" section (placed after "DB roles," before
+"Tests") covering every endpoint not already documented: write, query, verify,
+redact, retention sweep, with a one-line pointer to the existing Compliance
+Reporting section for export/public-key rather than duplicating that walkthrough.
+Each entry pairs a `curl` example with the key behavioral notes a caller would need
+(filter semantics, pagination, error codes, idempotency) rather than just the
+request shape.
+
+**Verification, not assumed accuracy:** brought the real stack up and ran every
+example in the new section exactly as written — write, query, verify, redact,
+sweep, and (from the existing Compliance section) export and public-key — against
+a clean database, confirming actual responses match what's documented before
+treating the section as done. Tore the stack down afterward.
+
+**Decision:** No commit made, per the user's standing instruction to commit their
+own review changes from this point forward.
+
+**Rationale:** See `README.md`, "Using the API" section.
