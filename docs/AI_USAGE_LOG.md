@@ -1243,3 +1243,199 @@ treating the section as done. Tore the stack down afterward.
 own review changes from this point forward.
 
 **Rationale:** See `README.md`, "Using the API" section.
+
+---
+
+## 2026-08-26 — Requirements change: Authentication & Authorization (Scenario C)
+
+**Status:** PROVISIONAL — requirements only; implementation, tests, and other docs
+not yet updated.
+
+**Intent:** User reported that external review of the initial submission flagged
+authentication and authorization as necessary for the prototype, and directed that
+it be filed under Scenario C, starting with a requirements-level discussion before
+any code changes.
+
+**Context surfaced by AI, confirmed by user:** the assignment brief names no
+explicit auth requirement — this falls under the evaluation criteria's "security
+and production readiness," and the repository already had a directly relevant,
+previously-**Decided** item: Scenario C's C6, which scoped auth/authz out on the
+reasoning that regulators never authenticate to the system directly (C1). AI
+proposed that this was the same question asked too narrowly the first time — C1
+answered "who consumes a report," never "who may call the API at all" — and
+recommended reopening C6 with a `⚠️ REVISED` note (matching the precedent already
+set for item 6c) rather than silently rewriting it.
+
+**AI produced, iterated with user:** a five-part proposal (C7 mechanism, C8
+coverage, C9 role model, C10 actorId-trust change, C11 secrets handling) presented
+in chat before any file was touched. Asked the user directly on C7 (the one
+foundational fork: static API keys vs. JWT bearer tokens vs. mTLS client certs,
+each with stated trade-offs) via a structured question; presented C8–C11 as
+recommendations for the user to react to rather than open questions, since each
+follows fairly directly from decisions (C1, 2a) already locked in.
+
+**Accepted:** User selected static API keys (C7) as presented. C8–C11 were not
+challenged and were written up as proposed:
+- **C8:** auth coverage is system-wide (every endpoint except `GET /health` and
+  `GET /audit/export/public-key`), not scoped to just Scenario C's endpoints —
+  reasoning that partial auth wouldn't cohere as "this service has auth."
+- **C9:** four flat roles (`writer`, `reader`, `compliance`, `scheduler`) mapped
+  onto the actor conventions already used informally in the docs, with `export`
+  placed under `compliance` (not `reader`) per C1's own framing of who export is
+  for. Documented as additive to, not a replacement for, the existing DB-level
+  `app_role`/`maintenance_role` split (2a).
+- **C10:** identified as the one substantive new engineering decision this change
+  produces, not just plumbing — redact/retention's `actorId` was a
+  caller-asserted, previously-unauthenticatable claim about who performed a
+  self-auditing administrative action; once callers are authenticated, continuing
+  to trust that claim as free-form input would defeat the purpose of adding auth.
+  Decision: derive `actorId` server-side from the authenticated principal for
+  those two endpoints only, removing it from their request schemas. Write's
+  `actorId` is unaffected — it identifies the subject of the recorded domain
+  event, not the calling principal, so caller-supplied input remains correct
+  there.
+- **C11:** dev-fixed API keys via config, filed under the same
+  already-documented secrets-externalization limitation as the export signing key
+  and DB passwords, not solved now.
+
+**Where this lives:** `docs/REQUIREMENTS.md`, Scenario C — C6 revised in place;
+new subsection "Requirement Change — Authentication & Authorization (post-review)"
+holds C7–C11; the Clarified Requirement Statement's auth scope-boundary bullet
+updated to point at the new decision instead of asserting auth is out of scope;
+"Next steps" appended with the concrete follow-on work (task breakdown, router/
+service wiring, schema changes, test fixture changes, doc updates) so it isn't
+lost.
+
+**Not yet done:** `TASKS.md` task breakdown, actual implementation, test coverage
+(including negative cases — missing/invalid key, wrong role per endpoint),
+`ARCHITECTURE.md`/`README.md` updates. Tracked as this entry's explicit next step,
+not silently deferred.
+
+---
+
+## 2026-08-26 — Requirements addition: cross-tenant/cross-account denial (C12)
+
+**Status:** PROVISIONAL — requirements only.
+
+**Intent:** User named a specific reviewer-requested security test —
+"cross-tenant denial tests" — and asked what such a test would cover, before
+deciding whether/how to add it.
+
+**AI explained, then surfaced a gap:** cross-tenant denial tests generally verify
+that an authenticated, otherwise-valid principal is still denied when acting on
+another tenant's data specifically (catching IDOR-style bugs where a role check
+passes but the underlying query isn't filtered to the caller's own data).
+Mapping that onto this system exposed that C9's role model (`writer`/`reader`/
+`compliance`/`scheduler`) is purely functional, with no per-account scoping at
+all — as designed, any `reader`/`compliance` key can already see every account in
+the log, so a cross-tenant denial test would currently have nothing to deny. This
+wasn't a pre-existing decision being revisited; it was a new gap the question
+itself surfaced.
+
+**AI produced, user accepted:** C12 — API key principals may carry an optional
+`resourceScope` allow-list of `resourceId`s, enforced server-side (intersected
+into the query, not just checked against caller-supplied filters) for `reader`'s
+query endpoint and `compliance`'s export endpoint specifically. Out-of-scope
+requests denied with `404` (not `403`) to avoid confirming another account's
+existence. Scoped to `resourceId` (the "account" analog per C3) rather than
+`actorId`, which identifies *who acted*, not a unit of data ownership. `writer`
+and `scheduler` deliberately left unscoped (write's `resourceId` describes the
+event's subject, not the caller, per the same reasoning as C10; retention sweep
+is age-based, not account-based) and `GET /audit/verify` deliberately left
+unscoped (discloses no account-specific content to begin with — scoping it would
+fight the single global chain design, 7a, for no confidentiality benefit).
+Postgres row-level security was considered and rejected as the enforcement
+mechanism — more production-grade, but requires schema/session-wiring changes
+disproportionate to this exercise, and doesn't cleanly fit this schema's
+`resourceId` granularity (RLS is typically keyed on a coarser `tenant_id` this
+table doesn't have) — named as a documented production trade-off instead.
+
+**Where this lives:** `docs/REQUIREMENTS.md`, Scenario C, new item C12 (after
+C11); Clarified Requirement Statement's auth scope-boundary bullet updated to
+reference it; "Next steps" appended with the concrete follow-on work, including
+an explicit note that the test suite needs a dedicated cross-account denial test
+(two scoped keys, each confirmed to reach only their own account and denied on
+the other's).
+
+**Not yet done:** everything — this is a requirements decision only.
+`TASKS.md`/implementation/tests still pending, same as C7–C11.
+
+---
+
+## 2026-08-26 — Task breakdown: Authentication & Authorization (C3.1–C3.7)
+
+**Status:** PROVISIONAL — task breakdown only, no implementation yet.
+
+**Intent:** Translate the requirements decided in C7–C12 into an actionable,
+dependency-ordered task list in `docs/TASKS.md`, matching the structure and
+per-task traceability convention already used for Scenarios A/B/C (checkbox,
+one-line description, `Implements:`/`Depends on:` back-references, target file
+paths).
+
+**AI produced:** a new "C3. Authentication & Authorization" section under
+Scenario C — seven tasks (C3.1 principal/API-key config, C3.2 the auth+role
+FastAPI dependency, C3.3 actorId-from-principal for redact/retention, C3.4
+resource-scope enforcement for query/export, C3.5 auth/authz test coverage
+including the breaking-change updates it forces on existing tests, C3.6 the
+dedicated cross-account denial test, C3.7 documentation) — plus updated the
+"Suggested build order" section with C3's internal dependency ordering (C3.3 and
+C3.4 identified as independent of each other, both gated on C3.2; C3.6 gated on
+C3.4; C3.7 last).
+
+**Also updated:** the existing Scenario C task section's closing text, which
+previously read "fully complete" and listed "authentication/authorization... is
+out of scope (C6)" as an explicit non-omission — both now stale given C6's
+reversal. Replaced with a pointer to the requirement change and to C3.
+
+**Accepted as proposed** — no user changes to the breakdown itself; this is the
+task-level decomposition of decisions already confirmed in the C7–C12
+requirements pass, not a new design fork.
+
+**Where this lives:** `docs/TASKS.md`, new "C3. Authentication & Authorization"
+section and "Suggested build order" update.
+
+**Not yet done:** all C3.1–C3.7 implementation and tests. Per the user's
+instruction, a commit will follow once this task breakdown is reviewed, before
+implementation begins.
+
+---
+
+## 2026-08-26 — Task addition: fail-secure guard on hardcoded dev secrets (P3)
+
+**Status:** PROVISIONAL — task added, no implementation yet.
+
+**Intent:** User relayed another code-review finding — "hardcoded dev secrets
+with no fail-secure guard" — and asked what it referred to and how to fix it,
+unrelated to the auth/authz work in progress.
+
+**AI explained:** the finding maps to `core/config.py`'s `Settings` — real
+secret material (`app_role_password`, `maintenance_role_password`,
+`export_signing_key_seed_hex`, and the same passwords again embedded in the
+three `*_database_url` fields) hardcoded as Python defaults, already named as a
+sidelined limitation in `TASKS.md` ("no 'production mode' guard preventing
+accidental reuse"). Clarified the specific gap the review comment is pointing
+at: not that dev defaults exist (normal, fine for local/test use), but that
+nothing checks whether a real deployment actually overrode them — the app fails
+*open*, booting silently on dev secrets in any environment including
+production.
+
+**AI proposed, user accepted, scoped deliberately narrower than full secrets
+externalization:** an `environment` setting (`development`/`test`/`production`,
+default `development`) plus a `model_validator` on `Settings` that raises at
+construction time if `environment == "production"` and any of the three secret
+fields still match their hardcoded literal. No vault/KMS integration — that
+stays out of scope, named explicitly as still-sidelined. Chosen because it's a
+small, testable, fail-closed guard that directly answers the review finding,
+distinct from (and much smaller than) actually sourcing secrets from a manager.
+
+**Where this lives:** `docs/TASKS.md`, "Production-readiness extensions" — new
+`P3` task (following the P1/P2 precedent: filed directly as a task with inline
+rationale, no separate `REQUIREMENTS.md` ambiguity-resolution entry, consistent
+with how P1/P2 were handled since these aren't part of the three-scenario
+process). "Explicitly sidelined" bullet updated to distinguish "fail-secure
+guard" (P3, now in progress) from "full secrets externalization" (still out of
+scope).
+
+**Not yet done:** implementation and the two tests (raises under
+`environment="production"` with defaults; doesn't raise in `"development"` or
+with real overrides).

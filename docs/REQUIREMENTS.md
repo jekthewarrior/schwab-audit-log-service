@@ -829,6 +829,13 @@ clarification process itself, not a resolved ambiguity list against existing tex
   question to revisit if Scenario C's regulator framing pulled auth/authz back into
   scope; given C1's resolution (internal staff, not external regulator logins), it
   doesn't.
+- **⚠️ REVISED (post-review, see "Requirement Change — Authentication &
+  Authorization" below):** raised during external review of the initial submission
+  — the prototype had no caller authentication on *any* endpoint, not just export.
+  C1's "regulators never authenticate directly" resolved who runs compliance
+  reports; it never addressed whether the system should authenticate its callers at
+  all, and conflating the two was the actual gap. This decision is superseded by
+  C7–C11.
 
 ### Clarified Requirement Statement
 
@@ -856,6 +863,159 @@ clarification process itself, not a resolved ambiguity list against existing tex
 >   including anything since archived" cannot be fully satisfied by this endpoint;
 >   reaching an archived record requires already knowing its `sequenceNumber` from
 >   before archival.
+> - **⚠️ REVISED — no longer a scope boundary; see below.** The API now requires
+>   caller authentication and role-based authorization on every endpoint except
+>   `GET /health` and `GET /audit/export/public-key` (C7–C9), and `compliance`/
+>   `reader` principals can be scoped to specific accounts, with cross-account
+>   access denied (C12).
+
+### Requirement Change — Authentication & Authorization (post-review)
+
+Raised during external review of the initial submission, after Scenarios A–C were
+otherwise complete: the prototype authenticated *nothing* — any caller could write
+events, redact fields, sweep retention, or pull a compliance export, all under any
+claimed `actorId`. Filed here, reopening C6, rather than as a new scenario, since it's
+the same question C6 already asked and answered too narrowly — C1 resolved *who
+consumes* a compliance report (regulators, indirectly, via internal staff); it never
+asked *who may call the API at all*. That's the actual gap.
+
+##### C7 — Authentication mechanism
+- **Status:** ✅ Decided
+- **Decision:** Static API keys, presented via a request header (`X-API-Key`),
+  checked against a config-loaded map of `key → {principalId, roles}`.
+- **Rationale:** Simplest mechanism that still enforces a real boundary, and
+  consistent with the project's existing dev-fixed-secrets pattern (export signing
+  key seed, DB role passwords — see C11). Confirmed with the user before proceeding,
+  given how much downstream design hangs off this choice.
+- **Rejected alternatives:**
+  - **JWT bearer tokens** — more "industry standard" (built-in expiry, richer
+    claims), and the `cryptography` dependency already used for export signing would
+    make issuing them easy. Rejected because it requires either standing up a token
+    issuer or minting long-lived test tokens to stand in for one — meaningfully more
+    moving parts than a 2–3 day prototype needs to demonstrate the enforcement
+    boundary itself.
+  - **mTLS (client certificates)** — strong service-to-service identity, but
+    requires a local CA, cert issuance/rotation tooling, and TLS-termination changes
+    to the dev stack. Disproportionate infrastructure for what this exercise needs
+    to show.
+
+##### C8 — Coverage: system-wide, or just Scenario C's endpoints?
+- **Status:** ✅ Decided
+- **Decision:** System-wide. Every endpoint requires a valid API key **except**:
+  - `GET /health` — a liveness probe; orchestrators/load balancers don't carry
+    application credentials.
+  - `GET /audit/export/public-key` — must stay fetchable by parties who never hold
+    credentials in this system at all, per C1: an external regulator receiving a
+    bundle from internal compliance staff needs to verify its signature without an
+    account here. Gating the public key behind auth would defeat the
+    self-contained, independently-verifiable bundle design Scenario B already
+    committed to.
+- **Rationale:** Filing this under Scenario C doesn't mean scoping enforcement to
+  just its endpoints — an authenticated `/audit/export` sitting next to a wide-open
+  `POST /audit/events` wouldn't cohere as "this service has auth," and the review
+  feedback that prompted this was about the system's callers generally, not
+  compliance reporting specifically.
+
+##### C9 — Role model
+- **Status:** ✅ Decided
+- **Decision:** Four flat roles (no hierarchy — a principal needing multiple
+  capabilities holds multiple roles), mapped to the actor conventions already used
+  informally throughout the docs (`compliance-officer-1`, `cron-scheduler`) rather
+  than inventing a new taxonomy:
+
+  | Role | Endpoints |
+  |---|---|
+  | `writer` | `POST /audit/events` |
+  | `reader` | `GET /audit/events`, `GET /audit/verify` |
+  | `compliance` | `GET /audit/export`, `POST /audit/events/{sequence_number}/redact` |
+  | `scheduler` | `POST /audit/retention/sweep` |
+
+- **Rationale:** `export` sits under `compliance`, not `reader` — C1 already
+  established export's purpose as compliance staff producing regulator-facing
+  reports, not general read access, so gating it at `reader` would under-restrict
+  it relative to what the requirement itself says it's for.
+- **Relationship to the existing DB-level roles (2a):** additive, not a
+  replacement. API-level roles gate *which caller may invoke which endpoint*;
+  `app_role`/`maintenance_role` remain the independent second layer limiting *what
+  the app's own DB connection may do regardless of caller* — defense-in-depth
+  against a compromised app process, not just an unauthenticated one. There's a
+  rough alignment for legibility (`writer`/`reader` endpoints run under
+  `app_role`; `compliance`/`scheduler` endpoints run under `maintenance_role`) but
+  it's not a hard 1:1 coupling enforced in code.
+
+##### C10 — Does authenticating callers change how `actorId` is trusted?
+- **Status:** ✅ Decided
+- **Decision:** For `POST /audit/events/{sequence_number}/redact` and
+  `POST /audit/retention/sweep`, `actorId` is no longer a caller-supplied request
+  field — it's derived server-side from the authenticated principal. For
+  `POST /audit/events`, `actorId` stays caller-supplied, unchanged.
+- **Rationale:** Redact/retention's `actorId` represents a claim about *who is
+  performing this administrative action* — previously spoofable by anyone, since
+  there was no authenticated identity to check it against. Once callers are
+  authenticated, continuing to trust a self-asserted identity for a self-auditing
+  action (both operations append their own audit event) would defeat the point of
+  adding auth at all. Write's `actorId` means something structurally different —
+  it's the *subject of the recorded domain event* (e.g. who logged in), not a claim
+  about the calling principal; a producer service legitimately writes events on
+  behalf of many different `actorId`s, so it correctly stays caller input.
+- **Consequence:** `RedactRequest`/`RetentionSweepRequest` lose their `actorId`
+  body field — a breaking change to those two request shapes, to be reflected in
+  `TASKS.md`, the test suite, and the README's "Using the API" examples.
+
+##### C11 — Secrets handling for API keys
+- **Status:** ✅ Decided
+- **Decision:** Dev-fixed keys defined in `Settings`/config, same pattern already
+  used for the export signing key seed and DB role passwords.
+- **Rationale:** Filed under the same already-documented "secrets externalization"
+  limitation (`TASKS.md`'s "Production-readiness extensions," `TESTING.md`'s "what
+  isn't automated") rather than solved now — a real deployment would source these
+  from a secrets manager or delegate to an actual IdP, disproportionate to build for
+  this exercise.
+
+##### C12 — Principal-to-resource scoping (cross-tenant/cross-account denial)
+- **Status:** ✅ Decided
+- **Decision:** An API key principal (C7) may carry an optional
+  `resourceScope: list[str] | None` — an allow-list of `resourceId` values. `None`
+  means unscoped (sees everything; used for e.g. the demo/dev key). When set, it is
+  enforced **server-side**, not merely checked against caller-supplied filter
+  parameters — the service layer intersects the caller's scope into the query
+  itself, so a scoped caller can't see other accounts just by omitting a
+  `resourceId` filter. A request naming an out-of-scope `resourceId` explicitly is
+  denied with **`404`, not `403`** — a scoped principal shouldn't be able to
+  distinguish "that account doesn't exist" from "that account isn't yours."
+  Applies to `reader`'s `GET /audit/events` and `compliance`'s `GET /audit/export`
+  only. `writer`, `scheduler`, and `GET /audit/verify` are explicitly **not**
+  scoped — see rationale.
+- **Rationale:** This is the mechanism a "cross-tenant denial test" actually
+  exercises — without it, any `reader`/`compliance` key sees every account in the
+  log, and there is nothing for such a test to deny. Scoped to `resourceId`
+  specifically (not `actorId`) because C3 already established `resourceType`/
+  `resourceId` as the "account" analog in this system's data model
+  ("client account data" = whatever `resourceType`(s) the caller specifies);
+  `actorId` identifies *who acted*, a cross-cutting concern spanning accounts, not
+  a unit of data ownership.
+  - **Why not `writer`:** a write's `resourceId` describes the *subject of the
+    domain event*, not a claim about the calling principal (same reasoning as
+    C10) — a single ingestion service legitimately writes events about many
+    accounts. The threat this closes is *read*-side confidentiality of client
+    data, not write-path integrity, which the hash chain and role gate already
+    cover.
+  - **Why not `scheduler`:** retention sweep operates on the whole table by
+    `recordedAt` age, not by account — there's no single `resourceId` to scope
+    an age-based sweep to.
+  - **Why not `GET /audit/verify`:** already flagged before this was written up —
+    verify walks the single global chain (7a) and returns no payload content,
+    only `sequenceNumber`/`violationType`; scoping it per-account would fight the
+    single-chain design for no confidentiality benefit, since it discloses
+    nothing account-specific to begin with.
+- **Rejected alternative — Postgres row-level security (RLS) keyed on a session
+  variable:** more robust/production-grade (enforced at the DB layer, not just the
+  service layer — can't be bypassed by a bug in application code), but requires a
+  schema/session-wiring change disproportionate to this exercise, and doesn't
+  obviously fit the existing `resourceId`-per-event granularity (RLS is typically
+  keyed on a coarser `tenant_id` column this schema doesn't have). Left as a named
+  production trade-off rather than built now — the service-layer intersection
+  gives the same caller-visible guarantee for this prototype's purposes.
 
 ### Next steps
 
@@ -863,3 +1023,14 @@ Requirement clarification complete for all three scenarios. Technical design and
 full actionable task breakdown (all three scenarios, dependency-ordered) now live in
 [`docs/TASKS.md`](TASKS.md) — including Scenario C's design, which turned out to be a
 small extension of Scenario B's export filters rather than new infrastructure.
+
+C7–C12 (authentication & authorization) are decided but not yet built: `TASKS.md`
+needs a new task group, every existing service/router touched by C8's coverage needs
+the auth dependency wired in, `RedactRequest`/`RetentionSweepRequest` need their
+`actorId` field removed per C10, `query.py`/`export.py` need the scope-intersection
+logic per C12, the test suite needs an authenticated `client` fixture plus negative
+(missing/invalid key, wrong role) coverage per endpoint **and** a dedicated
+cross-account denial test (two `resourceScope`-restricted keys, each confirmed to
+reach only their own account's events/export and denied — `404` — on the other's),
+and `ARCHITECTURE.md`/`README.md`/`docs/AI_USAGE_LOG.md` need updating to reflect the
+new layer.
