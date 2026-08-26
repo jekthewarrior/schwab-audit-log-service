@@ -1610,3 +1610,54 @@ performs. Stack torn down afterward.
 **Where this lives:** `tests/test_auth.py` (3 new tests),
 `tests/test_cross_tenant.py` (1 new test),
 `src/audit_log_service/schemas/redact.py` (`extra="forbid"`).
+
+---
+
+## 2026-08-26 — Doc sync: ARCHITECTURE.md and ENGINEERING_SUMMARY.md
+
+**Status:** FINAL.
+
+**Intent:** User pointed out `ARCHITECTURE.md` and `ENGINEERING_SUMMARY.md`
+needed updating for the auth/authz + fail-secure-guard work.
+
+**Checked first, not assumed:** `ARCHITECTURE.md` turned out to already be
+current — the components diagram, API surface table, and a full "Authentication
+& authorization" section were added as part of task C3.7 earlier in this same
+work stream. Confirmed via grep rather than re-doing it blind.
+`ENGINEERING_SUMMARY.md` had genuinely not been touched since before this work
+began, and contained a now-false claim.
+
+**AI produced (`ENGINEERING_SUMMARY.md` only):**
+- **Objective** — added a paragraph noting the post-submission extension and
+  pointing at where it's explained.
+- **Plan and process** — added a paragraph documenting that the auth/secrets-guard
+  work ran through the *same* four-phase discipline (requirements → tasks →
+  implementation → tests) as the original three scenarios, not an ad hoc patch.
+- **Artifacts** — commit count corrected (14+ → 20+, actual `git log` count).
+- **Risks found and mitigated** — added the redact `actorId`-spoofing gap found
+  while writing auth test coverage (`extra="forbid"` fix) as a third example,
+  which also fixed a pre-existing inconsistency: the section header said "Three
+  concrete examples" but only two bullets existed — likely from the user's
+  earlier direct edit removing a stale risk bullet without updating the count.
+  Not called out further since it's a minor pre-existing doc drift, not new work.
+- **Trade-offs** — added the C7 mechanism choice (static API keys vs. JWT vs.
+  mTLS, with the rejected alternatives' reasoning).
+- **Assumptions — the substantive fix.** The existing "No authentication/
+  authorization layer" bullet was now false. Rewrote it to explain the reversal
+  rather than deleting it outright: what was originally assumed, why (C6/C1),
+  what external review actually challenged (C1 answered "who *consumes* a
+  report," never "who may call the API"), and where the resulting decision
+  lives (C7–C12). Kept deliberately visible rather than scrubbed, since a wrong
+  assumption later corrected on challenge is itself part of the traceability
+  record this document exists to provide. Also updated the dev-secrets bullet to
+  mention P3's guard and its explicit boundary (guards the worst failure mode,
+  doesn't solve secrets management).
+- **Known limitations** — added static API keys / no real IdP as a third
+  "most consequential" item, cross-referenced to `ARCHITECTURE.md` rather than
+  duplicating its fuller treatment.
+- **What's next** — rewritten from a forward-looking placeholder ("a review may
+  follow") to reflect what the review actually produced so far (P1/P2, then
+  C7–C12/P3), with remaining sidelined items still named explicitly.
+
+**Where this lives:** `docs/ENGINEERING_SUMMARY.md` only — `docs/ARCHITECTURE.md`
+needed no changes.
