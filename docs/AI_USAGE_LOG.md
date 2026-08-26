@@ -1558,3 +1558,55 @@ still work exactly as before this change. Stack torn down afterward.
 (new coverage row, "sidelined" list clarified to distinguish this guard from
 still-out-of-scope full secrets externalization), `docs/ARCHITECTURE.md` (P3
 cross-referenced from the existing dev-fixed-API-keys limitation bullet).
+
+---
+
+## 2026-08-26 — Additional test coverage for auth/authz and P3
+
+**Status:** FINAL — implemented, tested, live-verified.
+
+**Intent:** User asked for tests covering "all the new functionality" from the
+auth/authz and fail-secure-guard work, after committing it. Reviewed
+`core/auth.py`'s branches against what `test_auth.py`/`test_cross_tenant.py`
+already exercised to find genuine gaps rather than padding with redundant
+tests — `check_resource_access`'s branches turned out to already be fully
+covered; four real gaps were found.
+
+**AI produced:**
+- **Retention's `actorId` derivation was untested** — `test_auth.py` had a
+  redact happy-path test proving `FIELD_REDACTED`'s `actorId` comes from the
+  authenticated principal, but no equivalent for retention's
+  `RECORD_ARCHIVED` event. Added the parallel test.
+- **A caller sending a spoofed `actorId` to redact was silently ignored, not
+  rejected** — found while writing the above: `RedactRequest` had no
+  `extra="forbid"`, so a stray/attempted-spoof `actorId` in the body would
+  just vanish rather than surface as a client error, which could mask a
+  caller's misunderstanding of who's now on record as having performed the
+  redaction. This is a small correctness fix flowing directly from C10's own
+  intent, not a new design decision — added `extra="forbid"` to
+  `RedactRequest`'s `model_config` and a test confirming `422`.
+  (Retention's endpoint has no request body at all now, so there's no
+  equivalent schema to harden — reintroducing an empty body schema there
+  would force callers to always send `{}`, contradicting the "no request
+  body" design already committed and documented; left as-is.)
+- **`GET /audit/verify` staying unscoped for a scoped principal was only a
+  documentation claim** (C12) — added a test proving a `reader` key with a
+  `resourceScope` still gets the full-chain result, not a restricted one.
+- **Scope intersection was only tested via `resourceId`/omitted-filter
+  combinations** — added a test using `resourceType` (shared by both seeded
+  accounts) without `resourceId`, confirming the intersection is genuinely
+  keyed on `resourceId`, not incidentally satisfied by some other filter.
+
+**Verification, not assumed correctness:** `ruff`/`mypy`/`bandit` all clean.
+Full suite: 93 passed (up from 89). Live-verified against the real Docker
+Compose stack: a spoofed `actorId` on redact returns
+`{"detail":[{"type":"extra_forbidden",...}]}` / `422`; the same request
+without `actorId` still redacts correctly. Retention's `actorId` derivation
+relies on backdating `recorded_at` via direct DB access, which the automated
+test does and the full suite confirmed passing — not re-demonstrated via curl,
+since that would need the same DB-level manipulation the test already
+performs. Stack torn down afterward.
+
+**Where this lives:** `tests/test_auth.py` (3 new tests),
+`tests/test_cross_tenant.py` (1 new test),
+`src/audit_log_service/schemas/redact.py` (`extra="forbid"`).

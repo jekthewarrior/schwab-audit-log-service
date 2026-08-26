@@ -129,3 +129,21 @@ async def test_denial_is_symmetric_across_both_scoped_principals(
 
     query = await client.get("/audit/events", headers=headers_b, params={"resourceId": "acct-a"})
     assert query.status_code == 404
+
+
+async def test_scope_intersects_with_other_filters_not_just_resource_id(
+    client: AsyncClient, monkeypatch: MonkeyPatch
+) -> None:
+    """Both seeded accounts share resourceType=ACCOUNT — confirms the scope
+    intersection is keyed on resourceId specifically, not accidentally
+    satisfied by matching some other filter the caller supplied instead.
+    """
+    _register_scoped_keys(monkeypatch)
+    await _seed_events(client)
+    headers_a = {"X-API-Key": SCOPED_KEY_A}
+
+    query = await client.get(
+        "/audit/events", headers=headers_a, params={"resourceType": "ACCOUNT"}
+    )
+    assert query.status_code == 200
+    assert {r["resourceId"] for r in query.json()["records"]} == {"acct-a"}

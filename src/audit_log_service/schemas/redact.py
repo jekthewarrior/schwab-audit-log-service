@@ -13,6 +13,10 @@ class RedactRequest(BaseModel):
     check it against.
     """
 
-    model_config = ConfigDict(alias_generator=to_camel, populate_by_name=True)
+    # extra="forbid": a caller sending actorId here now gets a loud 422 instead
+    # of it being silently ignored — a stray/attempted-spoof actorId should be an
+    # obvious client error, not a no-op that could mask a caller's misunderstanding
+    # of who's now considered to have performed the redaction (C10).
+    model_config = ConfigDict(alias_generator=to_camel, populate_by_name=True, extra="forbid")
 
     field: Annotated[str, Field(min_length=1)]

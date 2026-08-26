@@ -10,7 +10,10 @@ from typing import Any
 
 import pytest
 from httpx import AsyncClient
+from sqlalchemy import text
+from sqlalchemy.ext.asyncio import AsyncSession
 
+from audit_log_service.core.config import Principal, settings
 from tests.conftest import auth_headers
 
 ALL_ROLES = ("writer", "reader", "compliance", "scheduler")
@@ -136,3 +139,80 @@ async def test_compliance_role_can_redact_a_record_the_writer_role_created(
     )
     [redaction_event] = events.json()["records"]
     assert redaction_event["actorId"] == "compliance-officer-1"
+
+
+async def test_redact_rejects_a_spoofed_actor_id_instead_of_silently_ignoring_it(
+    client: AsyncClient,
+) -> None:
+    """C10: actorId used to be a trusted body field; now it's derived from the
+    authenticated principal. A caller still sending it (e.g. a stale client, or
+    an attempted spoof) gets a loud 422 (RedactRequest's extra="forbid"), not a
+    silent no-op that could mask a caller's misunderstanding of who's on record
+    as having performed the redaction.
+    """
+    response = await client.post(
+        "/audit/events/1/redact",
+        headers=auth_headers("compliance"),
+        json={"field": "x", "actorId": "someone-else"},
+    )
+    assert response.status_code == 422
+
+
+async def test_scheduler_role_retention_sweep_actor_id_is_the_authenticated_principal(
+    client: AsyncClient, maintenance_session: AsyncSession
+) -> None:
+    """Same C10 guarantee as redact's, checked for retention sweep: the
+    RECORD_ARCHIVED system event's actorId is the authenticated `scheduler`
+    principal (cron-scheduler per config.py's dev key map), not anything a
+    caller could set — there's no request body for this endpoint at all now.
+    """
+    await client.post(
+        "/audit/events",
+        headers=auth_headers("writer"),
+        json={
+            "eventType": "USER_LOGIN",
+            "actorId": "user-1",
+            "resourceType": "SESSION",
+            "resourceId": "sess-1",
+            "payload": {},
+            "timestamp": "2026-01-01T00:00:00Z",
+        },
+    )
+    await maintenance_session.execute(
+        text("UPDATE audit_events SET recorded_at = now() - interval '2 years'")
+    )
+    await maintenance_session.commit()
+
+    sweep = await client.post("/audit/retention/sweep", headers=auth_headers("scheduler"))
+    assert sweep.status_code == 200
+    assert sweep.json()["archivedSequenceNumbers"] == [1]
+
+    events = await client.get(
+        "/audit/events", headers=auth_headers("reader"), params={"eventType": "RECORD_ARCHIVED"}
+    )
+    [archive_event] = events.json()["records"]
+    assert archive_event["actorId"] == "cron-scheduler"
+
+
+async def test_verify_is_not_resource_scoped_even_for_a_scoped_principal(
+    client: AsyncClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """C12: GET /audit/verify deliberately isn't resource-scoped — it discloses
+    no account-specific content, only sequenceNumber/violationType, so a scoped
+    `reader` principal still gets the full-chain result, not a restricted view.
+    """
+    monkeypatch.setitem(
+        settings.api_keys,
+        "test-scoped-reader-key",
+        Principal(
+            principal_id="scoped-reader",
+            roles=frozenset({"reader"}),
+            resource_scope=frozenset({"acct-a"}),
+        ),
+    )
+
+    response = await client.get(
+        "/audit/verify", headers={"X-API-Key": "test-scoped-reader-key"}
+    )
+    assert response.status_code == 200
+    assert response.json()["intact"] is True
