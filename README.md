@@ -53,18 +53,41 @@ Alembic, never by application runtime code. Dev-only default passwords live in
 [`src/audit_log_service/core/config.py`](src/audit_log_service/core/config.py); see
 that file's docstring for the production caveat.
 
+### Authentication
+
+Added post-review — see [`docs/REQUIREMENTS.md`](docs/REQUIREMENTS.md)'s
+"Requirement Change — Authentication & Authorization" (C7–C12) for the full
+clarification process, and
+[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md#authentication--authorization) for
+the design. Every endpoint below **except** the public-key endpoint requires an
+`X-API-Key` header. Dev-fixed keys (`src/audit_log_service/core/config.py`):
+
+| Role | Dev API key | Can call |
+|---|---|---|
+| `writer` | `dev-writer-key` | `POST /audit/events` |
+| `reader` | `dev-reader-key` | `GET /audit/events`, `GET /audit/verify` |
+| `compliance` | `dev-compliance-key` | `GET /audit/export`, `POST /audit/events/{seq}/redact` |
+| `scheduler` | `dev-scheduler-key` | `POST /audit/retention/sweep` |
+
+Missing/unrecognized key → `401`. Valid key, wrong role → `403`. A `reader`/
+`compliance` principal can also be scoped to specific `resourceId`s — out of
+scope for the local dev keys above (none are scoped), exercised in
+`tests/test_cross_tenant.py`.
+
 ## Using the API
 
 All endpoints are under `/audit`; examples assume the service is running at
-`http://localhost:8000` (either option above). Full design rationale for each is in
-[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)'s API surface table and
-[`docs/REQUIREMENTS.md`](docs/REQUIREMENTS.md).
+`http://localhost:8000` (either option above) and include the API key each
+endpoint requires (see [Authentication](#authentication) above). Full design
+rationale for each is in [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)'s API
+surface table and [`docs/REQUIREMENTS.md`](docs/REQUIREMENTS.md).
 
 **Write an event** — `POST /audit/events`
 
 ```bash
 curl -X POST http://localhost:8000/audit/events \
   -H "Content-Type: application/json" \
+  -H "X-API-Key: dev-writer-key" \
   -d '{
     "eventType": "USER_LOGIN",
     "actorId": "user-1",
@@ -79,11 +102,14 @@ Returns the stored record, including its `sequenceNumber`, `contentHash`, and
 `prevHash` (64 zeros for the very first record — the genesis sentinel). All six
 fields are required; `eventType` must match `^[A-Z][A-Z0-9_]*$` (free-form, not a
 fixed enum — see 1a). No update or delete endpoint exists anywhere in this API.
+`actorId` here is the subject of the event (who logged in), not the caller — it
+stays caller-supplied even under auth (C10).
 
 **Query events** — `GET /audit/events`
 
 ```bash
-curl "http://localhost:8000/audit/events?actorId=user-1&eventType=USER_LOGIN&limit=10"
+curl "http://localhost:8000/audit/events?actorId=user-1&eventType=USER_LOGIN&limit=10" \
+  -H "X-API-Key: dev-reader-key"
 ```
 
 Filters (`actorId`, `resourceType`, `resourceId`, `eventType`, `from`, `to`) combine
@@ -92,12 +118,13 @@ with AND; `resourceType`/`resourceId` are independently valid without each other
 newest first — pass the response's `nextCursor` as `?cursor=<value>` for the next
 page. Archived records are excluded by default; add `includeArchived=true` to
 include them (though most of their filterable fields will already be `null` — see
-[`docs/REQUIREMENTS.md`](docs/REQUIREMENTS.md) Scenario B item 1e).
+[`docs/REQUIREMENTS.md`](docs/REQUIREMENTS.md) Scenario B item 1e). A scoped
+`reader` principal (C12) gets `404` naming a `resourceId` outside its allow-list.
 
 **Verify the chain** — `GET /audit/verify`
 
 ```bash
-curl http://localhost:8000/audit/verify
+curl http://localhost:8000/audit/verify -H "X-API-Key: dev-reader-key"
 ```
 
 `{"intact": true, ...}`, or on the first inconsistency found:
@@ -108,29 +135,31 @@ curl http://localhost:8000/audit/verify
 ```bash
 curl -X POST http://localhost:8000/audit/events/1/redact \
   -H "Content-Type: application/json" \
-  -d '{"field": "accountNumber", "actorId": "compliance-officer-1"}'
+  -H "X-API-Key: dev-compliance-key" \
+  -d '{"field": "accountNumber"}'
 ```
 
 Overwrites one top-level `payload` field with a redaction marker; `contentHash` is
 unchanged, so the chain still verifies afterward. `404` if the record or field
 doesn't exist, `409` if the field is already redacted or the record has been
-archived (nothing left to redact).
+archived (nothing left to redact). Who performed the redaction is derived from the
+authenticated principal (C10) — there's no `actorId` field in the request body.
 
 **Archive old records** — `POST /audit/retention/sweep`
 
 ```bash
-curl -X POST http://localhost:8000/audit/retention/sweep \
-  -H "Content-Type: application/json" \
-  -d '{"actorId": "cron-scheduler"}'
+curl -X POST http://localhost:8000/audit/retention/sweep -H "X-API-Key: dev-scheduler-key"
 ```
 
 Archives records older than `RETENTION_WINDOW_DAYS` (default 365, based on
 server-assigned `recordedAt`, not the caller-supplied `timestamp`). Returns the
 `sequenceNumber`s archived by this call (empty if nothing was eligible — safe to
-call repeatedly, e.g. from a cron job).
+call repeatedly, e.g. from a cron job). No request body — who ran it is derived
+from the authenticated principal (C10), same as redact.
 
 **Export a signed bundle** — `GET /audit/export`, and **fetch the verification
-public key** — `GET /audit/export/public-key`. See
+public key** — `GET /audit/export/public-key` (the only endpoint that needs no
+API key — see [Authentication](#authentication)). See
 [Compliance reporting](#compliance-reporting-scenario-c) below for the full
 walkthrough, including how a recipient verifies the bundle offline.
 
@@ -160,7 +189,8 @@ external regulators never authenticate to this system directly.
 viewed a given account's data in a time window:
 
 ```bash
-curl "http://localhost:8000/audit/export?resourceId=acct-123&eventType=ACCOUNT_VIEWED&from=2026-01-01T00:00:00Z&to=2026-06-30T23:59:59Z"
+curl "http://localhost:8000/audit/export?resourceId=acct-123&eventType=ACCOUNT_VIEWED&from=2026-01-01T00:00:00Z&to=2026-06-30T23:59:59Z" \
+  -H "X-API-Key: dev-compliance-key"
 ```
 
 The returned bundle is self-contained and signed (Ed25519) — a recipient fetches the
@@ -171,7 +201,10 @@ free-form rather than a fixed enum — "access" events are whatever convention y
 producers actually use (e.g. `ACCOUNT_VIEWED`, `RECORD_ACCESSED`).
 
 **Explicit scope boundaries** (from the Clarified Requirement Statement):
-- No authentication/authorization on who may call this endpoint.
+- Auth is now enforced (C7–C12, see [Authentication](#authentication) above) —
+  this was originally scoped out (C6) and reopened post-review. `compliance` is
+  the role gating this endpoint; it can optionally be scoped to specific accounts
+  (C12), though the dev keys above are unscoped.
 - No guarantee that every read-path in a broader system actually emits an access
   event — this service reports on what's captured, it doesn't instrument callers.
 - No full-text/payload-content search — `resourceType`/`resourceId`/`actorId` are

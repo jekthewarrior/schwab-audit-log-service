@@ -1,8 +1,10 @@
 from datetime import datetime
 from typing import Annotated
 
-from fastapi import APIRouter, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 
+from audit_log_service.core.auth import check_resource_access, require_roles
+from audit_log_service.core.config import Principal
 from audit_log_service.core.db import SessionDep
 from audit_log_service.core.signing import SIGNING_KEY_ID, public_key_hex
 from audit_log_service.schemas.export import ExportBundle
@@ -14,6 +16,7 @@ router = APIRouter(prefix="/audit", tags=["export"])
 @router.get("/export", response_model=ExportBundle)
 async def get_export(
     session: SessionDep,
+    principal: Annotated[Principal, Depends(require_roles("compliance"))],
     actor_id: Annotated[str | None, Query(alias="actorId")] = None,
     resource_type: Annotated[str | None, Query(alias="resourceType")] = None,
     resource_id: Annotated[str | None, Query(alias="resourceId")] = None,
@@ -21,6 +24,10 @@ async def get_export(
     from_: Annotated[datetime | None, Query(alias="from")] = None,
     to: Annotated[datetime | None, Query(alias="to")] = None,
 ) -> ExportBundle:
+    """C1: compliance staff, not general readers — export requires the
+    `compliance` role, not `reader`. C12: same scope enforcement as query_events.
+    """
+    check_resource_access(principal, resource_id)
     try:
         return await export_bundle(
             session,
@@ -30,6 +37,7 @@ async def get_export(
             event_type=event_type,
             from_=from_,
             to=to,
+            resource_scope=principal.resource_scope,
         )
     except NoFilterProvidedError as exc:
         raise HTTPException(

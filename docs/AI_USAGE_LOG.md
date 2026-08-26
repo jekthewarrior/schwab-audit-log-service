@@ -1439,3 +1439,122 @@ scope).
 **Not yet done:** implementation and the two tests (raises under
 `environment="production"` with defaults; doesn't raise in `"development"` or
 with real overrides).
+
+---
+
+## 2026-08-26 — Implementation: Authentication & Authorization (C3.1–C3.7)
+
+**Status:** FINAL for this task set — implemented, tested, live-verified.
+
+**Intent:** Build out the C7–C12 requirements / C3.1–C3.7 task breakdown decided
+in the two prior entries: static API-key auth, role-based authorization,
+`actorId` derivation from the authenticated principal for redact/retention, and
+resource-scoped cross-account denial.
+
+**AI produced, task by task:**
+- **C3.1/C3.2:** `Principal` (BaseModel: `principal_id`, `roles: frozenset[str]`,
+  `resource_scope: frozenset[str] | None`) and a dev-fixed
+  `Settings.api_keys: dict[str, Principal]` in `core/config.py` — four keys, one
+  per role, unscoped by default. New `core/auth.py`: `_authenticate` (reads
+  `X-API-Key`, 401 on missing/unrecognized — deliberately not distinguished, so
+  key-probing can't tell the two apart) and `require_roles(*roles)`, a dependency
+  factory nesting `_authenticate` so 401 always precedes 403. Wired into every
+  router (`api/events.py`, `api/verify.py`, `api/redact.py`, `api/retention.py`,
+  `api/export.py`) per C9's table; `GET /health` and `GET /audit/export/public-key`
+  deliberately left unguarded (C8).
+- **C3.3:** Removed `actorId` from `RedactRequest`; removed
+  `RetentionSweepRequest` entirely (it had no fields left once `actorId` was
+  gone, so the endpoint takes no body now rather than keeping an empty schema).
+  Both routers now pass `principal.principal_id` as `actor_id` to the service
+  layer instead.
+- **C3.4:** `resource_scope: frozenset[str] | None` parameter added to
+  `build_filtered_query`/`list_events` (`services/query.py`) and `export_bundle`
+  (`services/export.py`), intersected via `resource_id.in_(...)`. New
+  `core/auth.py:check_resource_access` denies an explicitly-named out-of-scope
+  `resourceId` with 404 before the query even runs; wired into
+  `api/events.py`'s query route and `api/export.py`'s export route.
+- **C3.5:** New `tests/test_auth.py` — parametrized 401/403/"correct role passes"
+  checks across all six protected (method, path, role) combinations, plus a
+  dedicated redact happy-path test confirming the `FIELD_REDACTED` event's
+  `actorId` is the authenticated principal. Updated `tests/conftest.py` with an
+  `auth_headers(role)` helper that looks up the configured dev key from
+  `settings.api_keys` itself (not a duplicated hardcoded string), so a key
+  rename in `config.py` can't silently desync from what tests send. Rewrote
+  `tests/test_http.py` and `tests/test_load.py` to pass the correct role's
+  headers on every call, and to drop `actorId` from redact/retention request
+  bodies (the breaking changes flagged in the task breakdown).
+- **C3.6:** New `tests/test_cross_tenant.py` — four tests using `monkeypatch` to
+  inject two scoped test-only keys (kept out of the production `api_keys`
+  defaults, which stay unscoped) rather than adding test fixtures to prod
+  config: own-account access succeeds; the other account is denied by explicit
+  `resourceId`; denied even when the filter is omitted entirely (the case an
+  explicit-id check alone wouldn't catch); and denial holds symmetrically from
+  the other scoped principal's side, guarding against a one-directional bug.
+- **C3.7:** `ARCHITECTURE.md` — auth gate added to the components diagram, API
+  surface table gained an "API role" column, new "Authentication &
+  authorization" section, new known-limitation bullet (static keys, no real
+  IdP). `README.md` — new "Authentication" section (dev key table), every
+  "Using the API" and Compliance-reporting `curl` example updated with
+  `X-API-Key`, `actorId` dropped from the redact/retention examples, the stale
+  "no auth" scope-boundary bullet corrected. `TESTING.md` — test count
+  (42 → 85), two new coverage-table rows.
+
+**Verification, not assumed correctness:** `ruff`/`mypy`/`bandit` all clean.
+Full suite: 85 passed (`sg docker -c "uv run pytest -q"`). Live-verified against
+the real Docker Compose stack via `curl`: missing key → 401, invalid key → 401,
+wrong role → 403, correct role → success for write/redact/retention/export/
+verify; confirmed the `FIELD_REDACTED` system event's `actorId` is
+`compliance-officer-1` (the authenticated principal) rather than caller input;
+confirmed `GET /health` and `GET /audit/export/public-key` remain reachable with
+no key at all. Stack torn down afterward.
+
+**Rejected/deferred, not silently dropped:** a role-hierarchy (`compliance`
+implying `reader`) — flat roles only, per C9; a `resourceScope` grant on
+`writer`/`scheduler` — explicitly out of scope per C12's rationale, unchanged
+from the requirements pass.
+
+**Where this lives:** see file list above; no docs changes beyond what's listed.
+
+---
+
+## 2026-08-26 — Implementation: fail-secure secrets guard (P3)
+
+**Status:** FINAL — implemented, tested, live-verified.
+
+**Intent:** Implement the P3 task decided earlier: `Settings` should refuse to
+construct under `ENVIRONMENT=production` while `app_role_password`,
+`maintenance_role_password`, or `export_signing_key_seed_hex` still hold their
+hardcoded dev-default values.
+
+**AI produced:** `core/config.py` — the three dev-default literals extracted to
+named module-level constants (`_DEV_APP_ROLE_PASSWORD`, etc.), reused both as
+the field defaults and as the guard's comparison values, so the guard can't
+silently drift from what the actual defaults are. New
+`Settings.environment: Literal["development", "test", "production"] =
+"development"` field, and a `@model_validator(mode="after")` that raises
+`ValueError` (surfaces as `pydantic.ValidationError`) listing which specific
+fields are still at their dev default, only when `environment == "production"`.
+Bandit flagged B105 ("possible hardcoded password") on the two newly-named
+password constants — a true false positive here (they're intentionally
+dev-only, and now guarded by the validator that reads them), suppressed with
+`# nosec B105` rather than restructuring the code to dodge the heuristic.
+
+**Tests:** new `tests/test_config.py`, four tests, no DB fixture (pure
+`Settings` construction, stays fast): raises under `production` with defaults;
+doesn't raise under `production` with all three overridden; doesn't raise under
+the default `development` environment even with defaults present; default
+environment is `development`.
+
+**Verification, not assumed correctness:** `ruff`/`mypy`/`bandit`/`pip-audit`
+all clean. Full suite: 89 passed (up from 85). Live-verified directly against
+`Settings`: `environment="production"` with defaults raises with the expected
+message; with all three secrets overridden it succeeds; unset (`development`)
+succeeds. Also rebuilt and brought up the real Docker Compose stack (default,
+unset `ENVIRONMENT`) to confirm no regression — `/health` and a real write both
+still work exactly as before this change. Stack torn down afterward.
+
+**Where this lives:** `src/audit_log_service/core/config.py`,
+`tests/test_config.py`; `docs/TASKS.md` (P3 marked done), `docs/TESTING.md`
+(new coverage row, "sidelined" list clarified to distinguish this guard from
+still-out-of-scope full secrets externalization), `docs/ARCHITECTURE.md` (P3
+cross-referenced from the existing dev-fixed-API-keys limitation bullet).

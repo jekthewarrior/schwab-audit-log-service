@@ -22,6 +22,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from audit_log_service.models import AuditEvent
+from tests.conftest import auth_headers
 
 WRITE_COUNT = 100
 
@@ -32,6 +33,7 @@ async def test_write_throughput_under_concurrent_load(
     async def _write(i: int) -> int:
         response = await client.post(
             "/audit/events",
+            headers=auth_headers("writer"),
             json={
                 "eventType": "USER_LOGIN",
                 "actorId": f"user-{i}",

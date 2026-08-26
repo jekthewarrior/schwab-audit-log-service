@@ -1,5 +1,9 @@
-from fastapi import APIRouter, HTTPException, status
+from typing import Annotated
 
+from fastapi import APIRouter, Depends, HTTPException, status
+
+from audit_log_service.core.auth import require_roles
+from audit_log_service.core.config import Principal
 from audit_log_service.core.db import MaintenanceSessionDep
 from audit_log_service.schemas.event import AuditEventOut
 from audit_log_service.schemas.redact import RedactRequest
@@ -16,14 +20,17 @@ router = APIRouter(prefix="/audit", tags=["redact"])
 
 @router.post("/events/{sequence_number}/redact", response_model=AuditEventOut)
 async def redact(
-    sequence_number: int, body: RedactRequest, session: MaintenanceSessionDep
+    sequence_number: int,
+    body: RedactRequest,
+    session: MaintenanceSessionDep,
+    principal: Annotated[Principal, Depends(require_roles("compliance"))],
 ) -> AuditEventOut:
     try:
         event = await redact_field(
             session,
             sequence_number=sequence_number,
             field=body.field,
-            actor_id=body.actor_id,
+            actor_id=principal.principal_id,
         )
     except RecordNotFoundError as exc:
         raise HTTPException(

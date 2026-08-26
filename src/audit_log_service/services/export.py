@@ -24,8 +24,15 @@ async def export_bundle(
     event_type: str | None = None,
     from_: datetime | None = None,
     to: datetime | None = None,
+    resource_scope: frozenset[str] | None = None,
 ) -> ExportBundle:
     """Signed, self-contained export bundle. REQUIREMENTS.md Scenario B 5a-5e.
+
+    resource_scope (C12): a `compliance` principal's resourceId allow-list,
+    intersected into the query the same way list_events does — see
+    services/query.py's build_filtered_query for the shared logic and the
+    explicit-resourceId 404 this doesn't itself handle (that's
+    core/auth.py's check_resource_access, called before this function).
 
     Requires at least one of resource_id/actor_id — an unscoped export of the
     entire chain isn't what this endpoint is for (that's /audit/events and
@@ -65,6 +72,7 @@ async def export_bundle(
         from_=from_,
         to=to,
         include_archived=True,
+        resource_scope=resource_scope,
     ).order_by(AuditEvent.sequence_number.asc())
     records = list((await session.scalars(query)).all())
 

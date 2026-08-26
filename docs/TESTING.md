@@ -5,7 +5,7 @@
 Two layers, deliberately: extensive **live manual verification** against the real
 running stack (Docker Compose) during development of every feature — documented
 inline in [`TASKS.md`](TASKS.md) as each task was built — followed by a
-**consolidated automated suite** (42 tests, `tests/`) that codifies those same
+**consolidated automated suite** (85 tests, `tests/`) that codifies those same
 scenarios into repeatable `pytest` coverage.
 
 Integration tests run against a **real PostgreSQL container** via `testcontainers`,
@@ -66,6 +66,9 @@ test suite.
 | DB privileges | `test_privileges.py` | `app_role` denied all mutation, `maintenance_role` denied on protected columns specifically, `maintenance_role` *can* update permitted columns (a positive control — without it, the negative tests could pass vacuously) |
 | HTTP layer | `test_http.py`, `test_health.py` | Routing, request validation, dependency injection, response serialization per endpoint; one full req 9 acceptance flow through the real HTTP surface end to end, proving the pieces are wired together correctly as a whole, not just individually correct |
 | Write throughput | `test_load.py` | 100 concurrent writes through the real HTTP layer — measured ~55 writes/sec in this environment under the fully-serialized-append design (7c); asserts correctness (gapless chain, all succeed) rather than a hard threshold, since hardware varies too much across machines for a fixed number to be a meaningful gate |
+| Auth/authz | `test_auth.py` | Every protected endpoint: missing key → `401`, invalid key → `401`, wrong role → `403`, correct role passes the gate; `GET /health`/`GET /audit/export/public-key` need no key; a full redact happy path confirming the `FIELD_REDACTED` event's `actorId` is the authenticated principal, not caller input (C10) |
+| Cross-account denial | `test_cross_tenant.py` | A `resourceScope`-restricted principal (C12) reaches only its own account via query/export, is denied (`404`) naming another account explicitly *and* when omitting the filter (proving server-side intersection, not just a check against what was asked), and denial holds symmetrically for a second scoped principal |
+| Fail-secure secrets guard | `test_config.py` | `Settings` raises under `ENVIRONMENT=production` while any of the three secret fields still hold their hardcoded dev default; doesn't raise once they're overridden, or under the default `development` environment (P3) |
 
 ## What isn't automated, and why
 
@@ -83,10 +86,12 @@ test suite.
   (`content_hash`, `sequence_number`) for `maintenance_role`'s denial, not every
   protected column individually — sufficient to prove the mechanism works, not
   exhaustive per-column coverage.
-- **CI enforcement, structured logging/observability, secrets externalization, and
-  a consistent global error-handling schema** were all considered alongside the
-  load test as production-readiness extensions and explicitly sidelined for now —
-  see `TASKS.md`'s "Production-readiness extensions" section.
+- **CI enforcement, structured logging/observability, full secrets
+  externalization (sourcing from an actual vault/KMS — P3 only adds a
+  fail-secure *guard*, not that), and a consistent global error-handling
+  schema** were all considered alongside the load test as production-readiness
+  extensions and explicitly sidelined for now — see `TASKS.md`'s
+  "Production-readiness extensions" section.
 
 See [`ARCHITECTURE.md`](ARCHITECTURE.md) for the design-level limitations these
 tests validate against (no external chain anchoring, fully serialized appends, the

@@ -15,6 +15,7 @@ def build_filtered_query(
     from_: datetime | None = None,
     to: datetime | None = None,
     include_archived: bool = True,
+    resource_scope: frozenset[str] | None = None,
 ) -> Select[tuple[AuditEvent]]:
     """Shared filter-building logic (REQUIREMENTS.md 4a-4c: AND semantics,
     resourceType/resourceId independently valid, from/to against the
@@ -22,6 +23,12 @@ def build_filtered_query(
     excluded by default) and the export service (Scenario B 5a-5e: unpaginated,
     archived records included by default, since a compliance export is meant to
     show the complete history for a resource/actor, not just the active subset).
+
+    resource_scope (C12): when set, intersected into the filter regardless of
+    what other filters the caller supplied — a scoped principal can't see other
+    accounts just by omitting a resourceId filter. The explicit-resourceId denial
+    (returning 404 rather than an empty result set) is handled by the caller
+    (core/auth.py's check_resource_access), before this function is ever called.
 
     Note on include_archived combined with other filters: archived records have
     every detail column nulled (Scenario B 2a/2b), including actor_id, resource_*,
@@ -49,6 +56,8 @@ def build_filtered_query(
         query = query.where(AuditEvent.timestamp <= to)
     if not include_archived:
         query = query.where(AuditEvent.archived.is_(False))
+    if resource_scope is not None:
+        query = query.where(AuditEvent.resource_id.in_(resource_scope))
 
     return query
 
@@ -65,6 +74,7 @@ async def list_events(
     include_archived: bool = False,
     cursor: int | None = None,
     limit: int = 50,
+    resource_scope: frozenset[str] | None = None,
 ) -> tuple[list[AuditEvent], int | None]:
     """Filtered, cursor-paginated query. 5a/5d/5b: keyset pagination on
     sequence_number, descending (newest first). Scenario B 1e: archived records
@@ -82,6 +92,7 @@ async def list_events(
         from_=from_,
         to=to,
         include_archived=include_archived,
+        resource_scope=resource_scope,
     ).order_by(AuditEvent.sequence_number.desc())
 
     if cursor is not None:

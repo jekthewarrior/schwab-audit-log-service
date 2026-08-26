@@ -1,8 +1,10 @@
 from datetime import datetime
 from typing import Annotated
 
-from fastapi import APIRouter, Query, status
+from fastapi import APIRouter, Depends, Query, status
 
+from audit_log_service.core.auth import check_resource_access, require_roles
+from audit_log_service.core.config import Principal
 from audit_log_service.core.db import SessionDep
 from audit_log_service.schemas.event import AuditEventCreate, AuditEventOut
 from audit_log_service.schemas.query import AuditEventPage
@@ -13,8 +15,17 @@ router = APIRouter(prefix="/audit", tags=["events"])
 
 
 @router.post("/events", status_code=status.HTTP_201_CREATED, response_model=AuditEventOut)
-async def create_event(body: AuditEventCreate, session: SessionDep) -> AuditEventOut:
-    """Append-only: no update or delete route exists anywhere in this API (req 2)."""
+async def create_event(
+    body: AuditEventCreate,
+    session: SessionDep,
+    _principal: Annotated[Principal, Depends(require_roles("writer"))],
+) -> AuditEventOut:
+    """Append-only: no update or delete route exists anywhere in this API (req 2).
+
+    actorId stays caller-supplied (C10) — it names the subject of the recorded
+    domain event, not the calling principal; a single producer service
+    legitimately writes events on behalf of many different actorIds.
+    """
     event = await append_event(
         session,
         event_type=body.event_type,
@@ -31,6 +42,7 @@ async def create_event(body: AuditEventCreate, session: SessionDep) -> AuditEven
 @router.get("/events", response_model=AuditEventPage)
 async def query_events(
     session: SessionDep,
+    principal: Annotated[Principal, Depends(require_roles("reader"))],
     actor_id: Annotated[str | None, Query(alias="actorId")] = None,
     resource_type: Annotated[str | None, Query(alias="resourceType")] = None,
     resource_id: Annotated[str | None, Query(alias="resourceId")] = None,
@@ -44,7 +56,12 @@ async def query_events(
     """Filters combine with AND (4b); resourceType/resourceId are independently
     valid (4c); from/to filter the caller-supplied timestamp (4a); cursor pagination
     descending by sequence_number, newest first (5a/5b/5d).
+
+    C12: a scoped principal naming a resourceId outside its allow-list is denied
+    (404); resource_scope is also intersected into list_events itself, so a
+    scoped principal can't see other accounts by omitting the resourceId filter.
     """
+    check_resource_access(principal, resource_id)
     records, next_cursor = await list_events(
         session,
         actor_id=actor_id,
@@ -54,6 +71,7 @@ async def query_events(
         from_=from_,
         to=to,
         include_archived=include_archived,
+        resource_scope=principal.resource_scope,
         cursor=cursor,
         limit=limit,
     )

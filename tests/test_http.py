@@ -5,6 +5,11 @@ module bypasses by calling service functions directly. Deep behavioral correctne
 already covered at the service layer; these tests focus on what's unique to HTTP:
 status codes, response shape, and that the wiring between routers and services is
 actually correct end to end.
+
+Auth/authz enforcement itself (401/403/404 per role, cross-account denial) is
+covered separately in test_auth.py and test_cross_tenant.py — every call here just
+carries whatever role the endpoint actually requires (C7-C9), so these tests keep
+exercising the business behavior they were written for.
 """
 
 from datetime import UTC, datetime
@@ -13,10 +18,13 @@ from httpx import AsyncClient
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from tests.conftest import auth_headers
+
 
 async def test_create_event_returns_camelcase_response(client: AsyncClient) -> None:
     response = await client.post(
         "/audit/events",
+        headers=auth_headers("writer"),
         json={
             "eventType": "USER_LOGIN",
             "actorId": "user-1",
@@ -39,6 +47,7 @@ async def test_create_event_invalid_event_type_returns_422_and_no_sequence_consu
 ) -> None:
     response = await client.post(
         "/audit/events",
+        headers=auth_headers("writer"),
         json={
             "eventType": "user_login",  # lowercase — violates the pattern (1a)
             "actorId": "user-1",
@@ -53,6 +62,7 @@ async def test_create_event_invalid_event_type_returns_422_and_no_sequence_consu
     # Confirm the rejected write never touched the chain (1d).
     ok = await client.post(
         "/audit/events",
+        headers=auth_headers("writer"),
         json={
             "eventType": "USER_LOGIN",
             "actorId": "user-1",
@@ -69,6 +79,7 @@ async def test_query_events_returns_pagination_envelope(client: AsyncClient) -> 
     for i in range(3):
         await client.post(
             "/audit/events",
+            headers=auth_headers("writer"),
             json={
                 "eventType": "USER_LOGIN",
                 "actorId": f"user-{i}",
@@ -79,7 +90,9 @@ async def test_query_events_returns_pagination_envelope(client: AsyncClient) -> 
             },
         )
 
-    response = await client.get("/audit/events", params={"limit": 2})
+    response = await client.get(
+        "/audit/events", headers=auth_headers("reader"), params={"limit": 2}
+    )
     assert response.status_code == 200
     body = response.json()
     assert [r["sequenceNumber"] for r in body["records"]] == [3, 2]
@@ -87,7 +100,7 @@ async def test_query_events_returns_pagination_envelope(client: AsyncClient) -> 
 
 
 async def test_verify_reports_intact_over_http(client: AsyncClient) -> None:
-    response = await client.get("/audit/verify")
+    response = await client.get("/audit/verify", headers=auth_headers("reader"))
     assert response.status_code == 200
     assert response.json() == {
         "intact": True,
@@ -100,6 +113,7 @@ async def test_verify_reports_intact_over_http(client: AsyncClient) -> None:
 async def test_redact_via_http_returns_marker(client: AsyncClient) -> None:
     await client.post(
         "/audit/events",
+        headers=auth_headers("writer"),
         json={
             "eventType": "RECORD_UPDATED",
             "actorId": "user-1",
@@ -111,7 +125,9 @@ async def test_redact_via_http_returns_marker(client: AsyncClient) -> None:
     )
 
     response = await client.post(
-        "/audit/events/1/redact", json={"field": "accountNumber", "actorId": "compliance-1"}
+        "/audit/events/1/redact",
+        headers=auth_headers("compliance"),
+        json={"field": "accountNumber"},
     )
     assert response.status_code == 200
     assert response.json()["payload"]["accountNumber"]["__redacted__"] is True
@@ -119,7 +135,7 @@ async def test_redact_via_http_returns_marker(client: AsyncClient) -> None:
 
 async def test_redact_nonexistent_record_returns_404_over_http(client: AsyncClient) -> None:
     response = await client.post(
-        "/audit/events/999/redact", json={"field": "x", "actorId": "compliance-1"}
+        "/audit/events/999/redact", headers=auth_headers("compliance"), json={"field": "x"}
     )
     assert response.status_code == 404
 
@@ -129,6 +145,7 @@ async def test_retention_sweep_via_http(
 ) -> None:
     await client.post(
         "/audit/events",
+        headers=auth_headers("writer"),
         json={
             "eventType": "USER_LOGIN",
             "actorId": "user-1",
@@ -143,19 +160,20 @@ async def test_retention_sweep_via_http(
     )
     await maintenance_session.commit()
 
-    response = await client.post("/audit/retention/sweep", json={"actorId": "cron"})
+    response = await client.post("/audit/retention/sweep", headers=auth_headers("scheduler"))
     assert response.status_code == 200
     assert response.json()["archivedSequenceNumbers"] == [1]
 
 
 async def test_export_requires_a_filter_over_http(client: AsyncClient) -> None:
-    response = await client.get("/audit/export")
+    response = await client.get("/audit/export", headers=auth_headers("compliance"))
     assert response.status_code == 400
 
 
 async def test_export_returns_signed_bundle_over_http(client: AsyncClient) -> None:
     await client.post(
         "/audit/events",
+        headers=auth_headers("writer"),
         json={
             "eventType": "ACCOUNT_VIEWED",
             "actorId": "user-1",
@@ -166,7 +184,9 @@ async def test_export_returns_signed_bundle_over_http(client: AsyncClient) -> No
         },
     )
 
-    response = await client.get("/audit/export", params={"resourceId": "acct-1"})
+    response = await client.get(
+        "/audit/export", headers=auth_headers("compliance"), params={"resourceId": "acct-1"}
+    )
     assert response.status_code == 200
     body = response.json()
     assert len(body["records"]) == 1
@@ -175,6 +195,9 @@ async def test_export_returns_signed_bundle_over_http(client: AsyncClient) -> No
 
 
 async def test_public_key_endpoint_over_http(client: AsyncClient) -> None:
+    """No auth required (C8) — the public key must be fetchable by parties who
+    never hold credentials in this system at all (C1).
+    """
     response = await client.get("/audit/export/public-key")
     assert response.status_code == 200
     body = response.json()
@@ -191,6 +214,7 @@ async def test_full_acceptance_flow_over_http(
     """
     write = await client.post(
         "/audit/events",
+        headers=auth_headers("writer"),
         json={
             "eventType": "RECORD_UPDATED",
             "actorId": "user-1",
@@ -202,10 +226,12 @@ async def test_full_acceptance_flow_over_http(
     )
     assert write.status_code == 201
 
-    query = await client.get("/audit/events", params={"resourceId": "acct-1"})
+    query = await client.get(
+        "/audit/events", headers=auth_headers("reader"), params={"resourceId": "acct-1"}
+    )
     assert len(query.json()["records"]) == 1
 
-    verify = await client.get("/audit/verify")
+    verify = await client.get("/audit/verify", headers=auth_headers("reader"))
     assert verify.json()["intact"] is True
 
     await admin_session.execute(
@@ -213,7 +239,7 @@ async def test_full_acceptance_flow_over_http(
     )
     await admin_session.commit()
 
-    verify_after_tamper = await client.get("/audit/verify")
+    verify_after_tamper = await client.get("/audit/verify", headers=auth_headers("reader"))
     body = verify_after_tamper.json()
     assert body["intact"] is False
     assert body["sequenceNumber"] == 1

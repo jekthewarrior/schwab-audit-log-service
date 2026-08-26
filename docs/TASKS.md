@@ -472,21 +472,21 @@ endpoint except `GET /health` and `GET /audit/export/public-key` now requires a
 valid API key and role; `compliance`/`reader` principals can additionally be scoped
 to specific accounts.
 
-- [ ] **C3.1 — API key / principal configuration.** New `Principal` type
+- [x] **C3.1 — API key / principal configuration.** New `Principal` type
   (`principal_id`, `roles: set[str]`, `resource_scope: list[str] | None`) and a
   dev-fixed `Settings.api_keys: dict[str, Principal]` config — same pattern already
   used for the export signing key seed and DB role passwords: fixed, documented, no
   secrets-manager integration.
   *Implements: C7, C11.*
   → `src/audit_log_service/core/config.py`, new `src/audit_log_service/core/auth.py`.
-- [ ] **C3.2 — Authentication + role-requirement dependency.** `require_roles(*roles)`
+- [x] **C3.2 — Authentication + role-requirement dependency.** `require_roles(*roles)`
   FastAPI dependency factory reading the `X-API-Key` header: `401` on a missing or
   unrecognized key, `403` on a valid key lacking every required role. Wired into
   every router per C9's role table.
   *Implements: C7, C8, C9.* Depends on: C3.1.
   → `src/audit_log_service/core/auth.py`; `api/events.py`, `api/verify.py`,
   `api/redact.py`, `api/retention.py`, `api/export.py`.
-- [ ] **C3.3 — Derive `actorId` from the authenticated principal for redact/
+- [x] **C3.3 — Derive `actorId` from the authenticated principal for redact/
   retention.** Remove `actorId` from `RedactRequest`/`RetentionSweepRequest`;
   `redact_field`/`sweep_retention` take the actor id from the authenticated
   `Principal`, not the request body. `POST /audit/events`'s `actorId` is
@@ -494,7 +494,7 @@ to specific accounts.
   *Implements: C10.* Depends on: C3.2.
   → `schemas/redact.py`, `schemas/retention.py`, `services/redact.py`,
   `services/retention.py`, `api/redact.py`, `api/retention.py`.
-- [ ] **C3.4 — Resource-scope enforcement for query and export.**
+- [x] **C3.4 — Resource-scope enforcement for query and export.**
   `build_filtered_query`/`export_bundle` gain a `resource_scope: list[str] | None`
   parameter, intersected directly into the SQL filter — never merely checked
   against caller-supplied parameters, so a scoped caller can't see other accounts
@@ -502,7 +502,7 @@ to specific accounts.
   scope is denied with `404`, not `403`.
   *Implements: C12.* Depends on: C3.2.
   → `services/query.py`, `services/export.py`, `api/events.py`, `api/export.py`.
-- [ ] **C3.5 — Tests: auth/authz enforcement.** Per-endpoint negative coverage
+- [x] **C3.5 — Tests: auth/authz enforcement.** Per-endpoint negative coverage
   (missing key → `401`, invalid key → `401`, valid key/wrong role → `403`) plus
   positive coverage confirming each role's permitted endpoints still work end to
   end. Updates two existing test surfaces for the breaking changes this
@@ -511,7 +511,7 @@ to specific accounts.
   *Implements: C7–C10.* Depends on: C3.2, C3.3.
   → New `tests/test_auth.py`; `tests/conftest.py`'s `client` fixture gains a way
   to issue a request under a given role/principal.
-- [ ] **C3.6 — Test: cross-account denial.** Two `compliance`-scoped API keys,
+- [x] **C3.6 — Test: cross-account denial.** Two `compliance`-scoped API keys,
   each with a `resourceScope` limited to a different `resourceId`. Each
   successfully queries/exports its own account; each is denied (`404`) on the
   other's account — both when naming it explicitly and when omitting the filter
@@ -519,7 +519,7 @@ to specific accounts.
   what the caller thought to ask for.
   *Implements: C12.* Depends on: C3.4.
   → New `tests/test_cross_tenant.py`.
-- [ ] **C3.7 — Documentation.** `ARCHITECTURE.md`: add the auth/authz layer to the
+- [x] **C3.7 — Documentation.** `ARCHITECTURE.md`: add the auth/authz layer to the
   components diagram and a new "Security model" subsection explaining how it
   composes with the existing DB-role layer (C9's rationale). `README.md`: new
   "Authentication" section (how to use an API key, the role table) and every
@@ -567,7 +567,7 @@ error handling were sidelined for now).
   (see `docs/TESTING.md` for the number and what it does/doesn't measure — ASGI
   in-process transport, so this is application+DB serialization overhead, not
   wire-level HTTP cost).
-- [ ] **P3 — Fail-secure guard on hardcoded dev secrets.** Raised in code review:
+- [x] **P3 — Fail-secure guard on hardcoded dev secrets.** Raised in code review:
   `Settings` (`app_role_password`, `maintenance_role_password`,
   `export_signing_key_seed_hex`, and the passwords embedded again in
   `database_url`/`maintenance_database_url`/`admin_database_url`) hardcodes real

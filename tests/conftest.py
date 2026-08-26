@@ -34,6 +34,7 @@ from sqlalchemy.ext.asyncio import (
 )
 from testcontainers.community.postgres import PostgresContainer
 
+from audit_log_service.core.config import settings
 from audit_log_service.core.db import get_maintenance_session, get_session
 from audit_log_service.main import app
 
@@ -42,6 +43,17 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 PG_USER = "audit"
 PG_PASSWORD = "audit"
 PG_DB = "audit_log"
+
+
+def auth_headers(role: str) -> dict[str, str]:
+    """Looks up a configured dev API key for the given role (C7/C9) from the
+    app's own settings.api_keys, rather than duplicating key strings here — a key
+    string change in config.py can't silently desync from what tests send.
+    """
+    for api_key, principal in settings.api_keys.items():
+        if role in principal.roles:
+            return {"X-API-Key": api_key}
+    raise ValueError(f"No configured dev API key grants role {role!r}")
 
 
 @dataclass

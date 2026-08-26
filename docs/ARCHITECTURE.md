@@ -20,17 +20,21 @@ new surface area.
 flowchart LR
     Client([Caller])
 
+    AuthGate{{"API key + role check\n(core/auth.py)"}}
+    Client -- X-API-Key --> AuthGate
+
     subgraph App[FastAPI app]
-        Write["POST /audit/events"]
-        Query["GET /audit/events"]
-        Verify["GET /audit/verify"]
-        Redact["POST /audit/events/:seq/redact"]
-        Sweep["POST /audit/retention/sweep"]
-        Export["GET /audit/export"]
-        PubKey["GET /audit/export/public-key"]
+        Write["POST /audit/events\n(writer)"]
+        Query["GET /audit/events\n(reader)"]
+        Verify["GET /audit/verify\n(reader)"]
+        Redact["POST /audit/events/:seq/redact\n(compliance)"]
+        Sweep["POST /audit/retention/sweep\n(scheduler)"]
+        Export["GET /audit/export\n(compliance)"]
+        PubKey["GET /audit/export/public-key\n(no auth)"]
     end
 
-    Client --> Write & Query & Verify & Redact & Sweep & Export & PubKey
+    AuthGate --> Write & Query & Verify & Redact & Sweep & Export
+    Client -- no auth --> PubKey
 
     subgraph DB[PostgreSQL]
         Table[(audit_events)]
@@ -54,6 +58,9 @@ flowchart LR
   (`api/events.py`, `api/verify.py`, `api/redact.py`, `api/retention.py`,
   `api/export.py`), each backed by a same-named service module holding the actual
   logic (`services/*.py`). Routers stay thin: validation + wiring only.
+- **Auth gate (`core/auth.py`)** — every route except `GET /health` and
+  `GET /audit/export/public-key` runs behind an API-key + role check; see
+  [Authentication & authorization](#authentication--authorization) below.
 - **PostgreSQL** — single table (`audit_events`), no other persistent state.
 - **Three DB roles**, not one — see [Security model](#security-model).
 - **Ed25519 signing key** — used only by the export endpoint; see
@@ -89,16 +96,20 @@ one per query filter (4a–4c).
 
 ## API surface
 
-| Method | Path | Role | Purpose |
-|---|---|---|---|
-| `POST` | `/audit/events` | `app_role` | Append an event (req 1, 2) |
-| `GET` | `/audit/events` | `app_role` | Filtered, cursor-paginated query (4a–4c, 5a–5c) |
-| `GET` | `/audit/verify` | `app_role` | Walk the chain, report intact/first break (req 8) |
-| `POST` | `/audit/events/{sequence_number}/redact` | `maintenance_role` | Redact one payload field (Scenario B 3) |
-| `POST` | `/audit/retention/sweep` | `maintenance_role` | Archive records past the retention window (Scenario B 1, 2) |
-| `GET` | `/audit/export` | `app_role` | Signed, self-contained bundle for a resource/actor (Scenario B 5, Scenario C) |
-| `GET` | `/audit/export/public-key` | — | Fetch the export signing public key |
-| `GET` | `/health` | — | Liveness |
+| Method | Path | API role (C9) | DB role | Purpose |
+|---|---|---|---|---|
+| `POST` | `/audit/events` | `writer` | `app_role` | Append an event (req 1, 2) |
+| `GET` | `/audit/events` | `reader` | `app_role` | Filtered, cursor-paginated query (4a–4c, 5a–5c) |
+| `GET` | `/audit/verify` | `reader` | `app_role` | Walk the chain, report intact/first break (req 8) |
+| `POST` | `/audit/events/{sequence_number}/redact` | `compliance` | `maintenance_role` | Redact one payload field (Scenario B 3) |
+| `POST` | `/audit/retention/sweep` | `scheduler` | `maintenance_role` | Archive records past the retention window (Scenario B 1, 2) |
+| `GET` | `/audit/export` | `compliance` | `app_role` | Signed, self-contained bundle for a resource/actor (Scenario B 5, Scenario C) |
+| `GET` | `/audit/export/public-key` | — (no auth) | — | Fetch the export signing public key |
+| `GET` | `/health` | — (no auth) | — | Liveness |
+
+`reader`/`compliance` principals may additionally carry a `resourceScope`
+allow-list (C12), restricting `GET /audit/events` and `GET /audit/export` to
+specific accounts — see [Authentication & authorization](#authentication--authorization).
 
 No update or delete route exists anywhere in this API — append-only is enforced at
 the interface boundary (req 2), not just by convention.
@@ -179,6 +190,47 @@ operation); a privileged actor with direct database access can't be stopped by a
 role grant, which is exactly the scenario the hash chain exists to *detect* instead.
 ([2a](REQUIREMENTS.md))
 
+## Authentication & authorization
+
+Added after initial submission, per external code review — see `REQUIREMENTS.md`'s
+"Requirement Change — Authentication & Authorization" (C6–C12) for the full
+clarification process. A layer **above** the DB-role split, not a replacement for
+it: this gates *which caller may invoke which endpoint*; the DB roles above remain
+the independent second layer limiting *what the app's own DB connection may do
+regardless of caller*.
+
+- **Mechanism (C7):** static API keys via the `X-API-Key` header, checked against
+  a config-loaded `key → Principal` map (`core/config.py`'s `Settings.api_keys`).
+  Dev-fixed, same pattern as the DB passwords and export signing key (C11) — not a
+  production secrets-manager integration.
+- **Coverage (C8):** every route requires a valid key and role, except
+  `GET /health` (a liveness probe) and `GET /audit/export/public-key` (must stay
+  fetchable by an external regulator who never holds credentials here at all,
+  per C1).
+- **Roles (C9):** four flat roles, no hierarchy — `writer`, `reader`,
+  `compliance`, `scheduler` — mapped to endpoints in the [API surface](#api-surface)
+  table above. `export` sits under `compliance`, not `reader`, since C1 already
+  framed export as a compliance-staff function, not general read access.
+- **`actorId` after auth (C10):** redact and retention sweep no longer accept
+  `actorId` as a request field — it's derived from the authenticated principal,
+  closing a spoofing gap that only existed because there was previously no
+  identity to check a caller-asserted value against. `POST /audit/events`'s
+  `actorId` is unaffected — it names the subject of the recorded domain event,
+  not the calling principal.
+- **Resource scoping / cross-account denial (C12):** a `reader`/`compliance`
+  principal may carry a `resourceScope` allow-list of `resourceId`s, enforced
+  server-side — intersected directly into the query (`services/query.py`,
+  `services/export.py`), not merely checked against caller-supplied filters, so a
+  scoped principal can't see other accounts by omitting a `resourceId` filter. A
+  `resourceId` named outside the caller's scope is denied with `404`, not `403`,
+  so a scoped caller can't distinguish "doesn't exist" from "isn't yours."
+  Deliberately **not** applied to `writer` (a write's `resourceId` describes the
+  event's subject, not the caller — same reasoning as C10), `scheduler`
+  (retention sweep is age-based, not account-based), or `GET /audit/verify`
+  (discloses no account-specific content to begin with — scoping it would fight
+  the single global chain design, [7a](REQUIREMENTS.md), for no confidentiality
+  benefit).
+
 ## Known architectural limitations
 
 Full list with rationale in [`REQUIREMENTS.md`](REQUIREMENTS.md); the structurally
@@ -198,6 +250,17 @@ significant ones:
 - **Archived records become unreachable via export filters** once their
   classification fields are nulled — a cross-feature interaction discovered during
   implementation, documented rather than fixed. ([Scenario B, 5e](REQUIREMENTS.md))
+- **Static, dev-fixed API keys — no real identity provider.** Auth (C7) proves
+  "this caller holds a configured key," not identity tied to a person/service in
+  any external directory; no key rotation, expiry, or revocation exists beyond
+  editing `Settings.api_keys`. A real deployment would delegate to an actual
+  IdP (OAuth2/OIDC) — explicitly out of scope, same trade-off already accepted
+  for the export signing key and DB passwords ([C11](REQUIREMENTS.md)). A
+  fail-secure guard (`TASKS.md`'s P3) refuses to boot under
+  `ENVIRONMENT=production` while any of the DB passwords/signing key seed are
+  still their hardcoded dev value — it stops the *dangerous* failure mode
+  (silently deploying on known values), not the underlying gap (no actual
+  secrets-manager sourcing, still out of scope).
 
 See [`TESTING.md`](TESTING.md) for coverage and testing-specific limitations, and
 [`ENGINEERING_SUMMARY.md`](ENGINEERING_SUMMARY.md) for the overall risk posture.
