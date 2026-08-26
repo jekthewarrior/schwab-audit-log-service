@@ -16,3 +16,5 @@ System — Audit Log Service (Charles Schwab & Co., Inc.)
 I, Pranav Kesani, attest that this submission is my own individual work,
 completed on my own machine and accounts, and that it honestly reflects my
 development process and use of AI.
+
+AI usage log, engineering summary, and further documentation can be found under the `docs` directory.
